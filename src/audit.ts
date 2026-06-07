@@ -14,7 +14,7 @@ export async function logMcpAudit(input: {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-while-mcp-internal-secret': config.mcpInternalSecret
+        'x-hebrah-mcp-internal-secret': config.mcpInternalSecret
       },
       body: JSON.stringify(input)
     })

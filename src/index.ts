@@ -14,12 +14,12 @@ import { callTool, toolDefinitions, validatePat, type McpAuth } from './tools.js
 function extractPat(authHeader: string | undefined): string | null {
   if (!authHeader?.startsWith('Bearer ')) return null
   const token = authHeader.slice(7).trim()
-  return token.startsWith('wh_pat_') ? token : null
+  return token.startsWith('hb_pat_') ? token : null
 }
 
 function createMcpServer(auth: McpAuth, sessionId: string) {
   const server = new Server(
-    { name: 'while-health-hosted', version: '0.1.0' },
+    { name: 'hebrah-hosted', version: '0.1.0' },
     { capabilities: { tools: {} } }
   )
 
@@ -79,7 +79,7 @@ app.get('/health', c => c.json({ ok: true }))
 app.all('/mcp', async (c) => {
   const pat = extractPat(c.req.header('authorization'))
   if (!pat) {
-    return c.json({ error: 'Missing Bearer wh_pat_* token' }, 401)
+    return c.json({ error: 'Missing Bearer hb_pat_* token' }, 401)
   }
 
   const validated = await validatePat(pat)
@@ -105,5 +105,5 @@ app.all('/mcp', async (c) => {
 })
 
 serve({ fetch: app.fetch, port: config.port }, () => {
-  console.log(`while-mcp-host listening on http://0.0.0.0:${config.port}`)
+  console.log(`hebrah-mcp-host listening on http://0.0.0.0:${config.port}`)
 })

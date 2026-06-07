@@ -23,8 +23,8 @@ export function getSession(sessionId: string) {
 
 async function ultraFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const key = config.sandboxApiKey
-  if (!key.startsWith('wh_test_')) {
-    throw new Error('WHILE_SANDBOX_API_KEY must be set on while-mcp-host for ultra-a tools')
+  if (!key.startsWith('hb_test_')) {
+    throw new Error('HEBRAH_SANDBOX_API_KEY must be set on hebrah-mcp-host for hebrah-api tools')
   }
   const res = await fetch(`${config.whileApiUrl}${path}`, {
     ...init,
@@ -35,7 +35,7 @@ async function ultraFetch<T>(path: string, init?: RequestInit): Promise<T> {
     }
   })
   if (!res.ok) {
-    throw new Error(`ultra-a ${path} failed (${res.status}): ${await res.text()}`)
+    throw new Error(`hebrah-api ${path} failed (${res.status}): ${await res.text()}`)
   }
   return res.json() as Promise<T>
 }
@@ -69,7 +69,7 @@ export const toolDefinitions = [
   { name: 'approve_promotion', description: 'Approve & sync to Live (requires confirm_action token)' },
   { name: 'reject_promotion', description: 'Reject an open promotion' },
   { name: 'get_live_deployment', description: 'Read-only: what version is deployed on Live' },
-  { name: 'get_sandbox_catalog', description: 'ultra-a sandbox catalog (optional)' },
+  { name: 'get_sandbox_catalog', description: 'hebrah-api sandbox catalog (optional)' },
   { name: 'trigger_test_webhook', description: 'Trigger mock webhook (sandbox)' }
 ]
 
@@ -212,7 +212,7 @@ export async function validatePat(pat: string) {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-while-mcp-internal-secret': config.mcpInternalSecret
+      'x-hebrah-mcp-internal-secret': config.mcpInternalSecret
     },
     body: JSON.stringify({ token: pat })
   })
