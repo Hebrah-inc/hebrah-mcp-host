@@ -24,7 +24,7 @@ export function getSession(sessionId: string) {
 async function ultraFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const key = config.sandboxApiKey
   if (!key.startsWith('hb_test_')) {
-    throw new Error('WHILE_SANDBOX_API_KEY must be set on hebrah-mcp-host for hebrah-api tools')
+    throw new Error('HEBRAH_SANDBOX_API_KEY must be set on hebrah-mcp-host for hebrah-api tools')
   }
   const res = await fetch(`${config.hebrahApiUrl}${path}`, {
     ...init,
