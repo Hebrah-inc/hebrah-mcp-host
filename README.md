@@ -25,7 +25,9 @@ Health check: `curl -s http://localhost:3021/health | jq .`
 | `HEBRAH_SANDBOX_API_KEY` | *(required for some tools)* | Org `hb_test_*` from onboarding — **not** the PAT |
 | `MCP_INTERNAL_SECRET` | (from `generate-local-secrets.sh`) | Must match hebrah-app |
 
-Copy `.env.example` and fill in `HEBRAH_SANDBOX_API_KEY` from hebrah onboarding **Step 2**. Match `MCP_INTERNAL_SECRET` in hebrah-app `.env` and set `NUXT_PUBLIC_MCP_URL=http://localhost:3021`.
+Copy `.env.example` and fill in `HEBRAH_SANDBOX_API_KEY` from hebrah onboarding **Step 2**. Run `bash ../scripts/generate-local-secrets.sh` and `bash ../scripts/merge-local-secrets.sh` for `MCP_INTERNAL_SECRET` (must match hebrah-app). Set `NUXT_PUBLIC_MCP_URL=http://localhost:3021` in hebrah-app `.env`.
+
+The dev server loads `hebrah-mcp-host/.env` automatically at startup.
 
 ### Credential types
 

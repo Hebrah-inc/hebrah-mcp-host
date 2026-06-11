@@ -1,3 +1,7 @@
+import { loadEnvFile } from './loadEnv.js'
+
+loadEnvFile()
+
 function requireSecret(name: string, minLength = 32): string {
   const secret = process.env[name]?.trim()
   if (!secret) {
