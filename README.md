@@ -23,7 +23,7 @@ Health check: `curl -s http://localhost:3021/health | jq .`
 | `HEBRAH_DASHBOARD_URL` | `http://localhost:3000` | PAT validation + dashboard API proxy |
 | `HEBRAH_API_URL` | `http://localhost:8000` | Control plane for catalog + webhook trigger |
 | `HEBRAH_SANDBOX_API_KEY` | *(required for some tools)* | Org `hb_test_*` from onboarding — **not** the PAT |
-| `MCP_INTERNAL_SECRET` | `REDACTED_DEV_SECRET` | Must match hebrah-app |
+| `MCP_INTERNAL_SECRET` | (from `generate-local-secrets.sh`) | Must match hebrah-app |
 
 Copy `.env.example` and fill in `HEBRAH_SANDBOX_API_KEY` from hebrah onboarding **Step 2**. Match `MCP_INTERNAL_SECRET` in hebrah-app `.env` and set `NUXT_PUBLIC_MCP_URL=http://localhost:3021`.
 
