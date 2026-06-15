@@ -71,10 +71,13 @@ Implementation: [src/tools.ts](./src/tools.ts).
 | Rule | Detail |
 |------|--------|
 | Writes | `update_connection_mapping`, `create_config_version` apply to **Sandbox** connections only |
-| Live | Read-only until an approved promotion deploys config |
-| Context | Call `set_active_connection` before mapping or promotion tools |
+| Live | Read-only until an approved **Pro-plan** promotion deploys config |
+| Promotions | **Pro plan only** — `get_account_status.canPromoteToLive` must be true |
+| Context | Call `set_active_connection` before mapping; promotion tools require Pro |
 
-## Promotion guardrails (`confirm_action` → `approve_promotion`)
+## Promotion guardrails (Pro plan — `confirm_action` → `approve_promotion`)
+
+Promotion MCP tools and dashboard **Promote to Live** require a **Pro plan**. The MCP host checks `canPromoteToLive` on `/api/org/status` before `create_promotion`, `get_promotion`, `confirm_action`, `approve_promotion`, or `reject_promotion`.
 
 Live sync requires a deliberate two-step confirmation. Skipping `confirm_action` or omitting `humanIntentMessage` causes `approve_promotion` to fail.
 

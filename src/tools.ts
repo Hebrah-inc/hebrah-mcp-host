@@ -40,6 +40,16 @@ async function ultraFetch<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>
 }
 
+
+async function assertPromoteToLiveAllowed(pat: string): Promise<void> {
+  const status = await dashboardFetch<{ canPromoteToLive?: boolean }>(pat, '/api/org/status')
+  if (!status.canPromoteToLive) {
+    throw new Error(
+      'Promote-to-Live requires a Pro plan. Upgrade your organization to use promotion tools (create_promotion, approve_promotion, etc.).'
+    )
+  }
+}
+
 async function dashboardFetch<T>(pat: string, path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${config.dashboardUrl}${path}`, {
     ...init,
@@ -63,11 +73,11 @@ export const toolDefinitions = [
   { name: 'update_connection_mapping', description: 'Update mappings on sandbox connection only' },
   { name: 'list_config_versions', description: 'List sandbox config versions' },
   { name: 'create_config_version', description: 'Snapshot current sandbox config as a new version' },
-  { name: 'create_promotion', description: 'Open a promotion (PR) to sync sandbox version to Live' },
-  { name: 'get_promotion', description: 'Promotion detail and diff summary' },
-  { name: 'confirm_action', description: 'Issue a confirmation token before approve_promotion' },
-  { name: 'approve_promotion', description: 'Approve & sync to Live (requires confirm_action token)' },
-  { name: 'reject_promotion', description: 'Reject an open promotion' },
+  { name: 'create_promotion', description: 'Pro plan: open a promotion (PR) to sync sandbox version to Live' },
+  { name: 'get_promotion', description: 'Pro plan: promotion detail and diff summary' },
+  { name: 'confirm_action', description: 'Pro plan: issue a confirmation token before approve_promotion' },
+  { name: 'approve_promotion', description: 'Pro plan: approve & sync to Live (requires confirm_action token)' },
+  { name: 'reject_promotion', description: 'Pro plan: reject an open promotion' },
   { name: 'get_live_deployment', description: 'Read-only: what version is deployed on Live' },
   { name: 'get_sandbox_catalog', description: 'hebrah-api sandbox catalog (optional connection_id)' },
   { name: 'trigger_test_webhook', description: 'Trigger mock webhook (sandbox); supports event, scenario_id, connection_id' },
@@ -107,7 +117,7 @@ export async function callTool(
       return {
         activeConnectionId: session.activeConnectionId,
         connection: conn,
-        note: 'All edits apply to Sandbox. Use create_promotion to sync Live (read-only until promoted).'
+        note: 'All edits apply to Sandbox. Promote-to-Live (create_promotion) requires a Pro plan; get_account_status returns canPromoteToLive.'
       }
     }
     case 'get_account_status':
@@ -137,6 +147,7 @@ export async function callTool(
       })
     }
     case 'create_promotion': {
+      await assertPromoteToLiveAllowed(auth.pat)
       const id = String(args.connectionId ?? session.activeConnectionId ?? '')
       return dashboardFetch(auth.pat, `/api/connections/${encodeURIComponent(id)}/promotions`, {
         method: 'POST',
@@ -149,6 +160,7 @@ export async function callTool(
       })
     }
     case 'get_promotion': {
+      await assertPromoteToLiveAllowed(auth.pat)
       const connId = String(args.connectionId ?? session.activeConnectionId ?? '')
       const prId = String(args.promotionId ?? '')
       return dashboardFetch(
@@ -157,6 +169,7 @@ export async function callTool(
       )
     }
     case 'confirm_action': {
+      await assertPromoteToLiveAllowed(auth.pat)
       const promotionId = String(args.promotionId ?? '')
       if (!promotionId) {
         throw new Error('promotionId required for confirm_action')
@@ -169,6 +182,7 @@ export async function callTool(
       }
     }
     case 'approve_promotion': {
+      await assertPromoteToLiveAllowed(auth.pat)
       const connId = String(args.connectionId ?? session.activeConnectionId ?? '')
       const prId = String(args.promotionId ?? '')
       const token = String(args.confirmationToken ?? '')
@@ -185,6 +199,7 @@ export async function callTool(
       )
     }
     case 'reject_promotion': {
+      await assertPromoteToLiveAllowed(auth.pat)
       const connId = String(args.connectionId ?? session.activeConnectionId ?? '')
       const prId = String(args.promotionId ?? '')
       return dashboardFetch(
