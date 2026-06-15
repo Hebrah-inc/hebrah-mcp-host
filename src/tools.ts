@@ -69,8 +69,22 @@ export const toolDefinitions = [
   { name: 'approve_promotion', description: 'Approve & sync to Live (requires confirm_action token)' },
   { name: 'reject_promotion', description: 'Reject an open promotion' },
   { name: 'get_live_deployment', description: 'Read-only: what version is deployed on Live' },
-  { name: 'get_sandbox_catalog', description: 'hebrah-api sandbox catalog (optional)' },
-  { name: 'trigger_test_webhook', description: 'Trigger mock webhook (sandbox)' }
+  { name: 'get_sandbox_catalog', description: 'hebrah-api sandbox catalog (optional connection_id)' },
+  { name: 'trigger_test_webhook', description: 'Trigger mock webhook (sandbox); supports event, scenario_id, connection_id' },
+  { name: 'list_sandbox_domains', description: 'List sandbox domain definitions (clinical, documents, prior_auth, etc.)' },
+  { name: 'get_sandbox_domain', description: 'Get one sandbox domain with events, resources, and scenarios' },
+  { name: 'get_synthetic_resource', description: 'Fetch synthetic FHIR resource by type and id' },
+  { name: 'run_sandbox_scenario', description: 'Run multi-step sandbox workflow scenario (e.g. prior_auth_happy_path)' },
+  { name: 'get_payer_rules', description: 'Synthetic prior-auth payer rules stub' },
+  { name: 'list_sandbox_events', description: 'List webhook events grouped by sandbox domain' },
+  { name: 'list_hl7_templates', description: 'List injectable HL7 sandbox templates' },
+  { name: 'inject_hl7', description: 'Inject synthetic HL7 message or template; fires mapped webhook' },
+  { name: 'sidecar_writeback', description: 'POST synthetic EHR write-back action to local sidecar URL' },
+  { name: 'run_hl7_flight_check', description: 'Run orchestrator HL7 ACK probe for a provisioned VM' },
+  { name: 'list_webhook_deliveries', description: 'List outbound webhook delivery records with retry status' },
+  { name: 'replay_webhook_delivery', description: 'Replay a stored webhook envelope by delivery id' },
+  { name: 'configure_webhook_reliability', description: 'Set sandbox webhook reliability/chaos profile' },
+  { name: 'run_webhook_reliability_scenario', description: 'Configure profile and run webhook reliability scenario' }
 ]
 
 export async function callTool(
@@ -197,7 +211,158 @@ export async function callTool(
       if (connectionId) {
         body.connection_id = connectionId
       }
+      if (args.scenario_id ?? args.scenarioId) {
+        body.scenario_id = args.scenario_id ?? args.scenarioId
+      }
+      if (args.domain_id ?? args.domainId) {
+        body.domain_id = args.domain_id ?? args.domainId
+      }
       return ultraFetch('/v1/webhooks/trigger-mock-event', {
+        method: 'POST',
+        body: JSON.stringify(body)
+      })
+    }
+    case 'list_sandbox_domains':
+      return ultraFetch('/v1/sandbox/domains')
+    case 'get_sandbox_domain':
+      return ultraFetch(`/v1/sandbox/domains/${encodeURIComponent(String(args.domainId ?? args.domain_id ?? ''))}`)
+    case 'get_synthetic_resource': {
+      const resourceType = String(args.resourceType ?? args.resource_type ?? '')
+      const resourceId = String(args.resourceId ?? args.resource_id ?? '')
+      const patientId = args.patientId ?? args.patient_id
+      const q = patientId ? `?patient_id=${encodeURIComponent(String(patientId))}` : ''
+      return ultraFetch(
+        `/v1/sandbox/resources/${encodeURIComponent(resourceType)}/${encodeURIComponent(resourceId)}${q}`
+      )
+    }
+    case 'run_sandbox_scenario': {
+      const scenarioId = String(args.scenarioId ?? args.scenario_id ?? '')
+      const body: Record<string, unknown> = {
+        patient_id: args.patient_id ?? args.patientId ?? 'pat_00000000_01'
+      }
+      const connectionId = args.connection_id ?? args.connectionId ?? session.activeConnectionId
+      if (connectionId) {
+        body.connection_id = connectionId
+      }
+      if (args.delay_seconds !== undefined || args.delaySeconds !== undefined) {
+        body.delay_seconds = args.delay_seconds ?? args.delaySeconds
+      }
+      return ultraFetch(`/v1/sandbox/scenarios/${encodeURIComponent(scenarioId)}/run`, {
+        method: 'POST',
+        body: JSON.stringify(body)
+      })
+    }
+    case 'get_payer_rules':
+      return ultraFetch(`/v1/sandbox/payer-rules/${encodeURIComponent(String(args.payerId ?? args.payer_id ?? 'payer_aetna'))}`)
+    case 'list_sandbox_events': {
+      const catalog = await ultraFetch<{ event_groups?: Record<string, string[]> }>('/v1/sandbox/catalog')
+      return catalog.event_groups ?? {}
+    }
+    case 'list_hl7_templates':
+      return ultraFetch('/v1/sandbox/hl7/templates')
+    case 'inject_hl7': {
+      const body: Record<string, unknown> = {
+        patient_id: args.patient_id ?? args.patientId ?? 'pat_00000000_01',
+        deliver: args.deliver ?? true
+      }
+      const connectionId = args.connection_id ?? args.connectionId ?? session.activeConnectionId
+      if (connectionId) {
+        body.connection_id = connectionId
+      }
+      if (args.template_id ?? args.templateId) {
+        body.template_id = args.template_id ?? args.templateId
+      }
+      if (args.message) {
+        body.message = args.message
+      }
+      if (args.event) {
+        body.event = args.event
+      }
+      return ultraFetch('/v1/sandbox/hl7/inject', {
+        method: 'POST',
+        body: JSON.stringify(body)
+      })
+    }
+    case 'sidecar_writeback': {
+      const url = String(args.url ?? process.env.SIDECAR_WRITEBACK_URL ?? '')
+      if (!url) {
+        throw new Error('url argument or SIDECAR_WRITEBACK_URL env required for sidecar_writeback')
+      }
+      const action = String(args.action ?? 'chart-note')
+      const endpoint = `${url.replace(/\/$/, '')}/v1/writeback/${action}`
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          patient_id: args.patient_id ?? args.patientId ?? 'pat_00000000_01',
+          ...(typeof args.body === 'object' && args.body ? args.body : {})
+        })
+      })
+      if (!res.ok) {
+        throw new Error(`sidecar write-back failed (${res.status}): ${await res.text()}`)
+      }
+      return res.json()
+    }
+    case 'run_hl7_flight_check': {
+      const vmId = String(args.vmId ?? args.vm_id ?? '')
+      if (!vmId) {
+        throw new Error('vmId required for run_hl7_flight_check')
+      }
+      const config = await import('./config.js').then(m => m.config)
+      const secret = config.orchestratorSecret || process.env.ORCHESTRATOR_SECRET
+      if (!secret) {
+        throw new Error('ORCHESTRATOR_SECRET required on hebrah-mcp-host for run_hl7_flight_check')
+      }
+      const orchUrl = config.orchestratorUrl
+      const res = await fetch(`${orchUrl}/v1/vms/${encodeURIComponent(vmId)}/hl7-probe`, {
+        method: 'POST',
+        headers: { 'X-Orchestrator-Secret': secret }
+      })
+      if (!res.ok) {
+        throw new Error(`hl7-probe failed (${res.status}): ${await res.text()}`)
+      }
+      return res.json()
+    }
+    case 'list_webhook_deliveries': {
+      const params = new URLSearchParams()
+      const connectionId = args.connection_id ?? args.connectionId ?? session.activeConnectionId
+      if (connectionId) params.set('connection_id', String(connectionId))
+      if (args.status) params.set('status', String(args.status))
+      if (args.limit) params.set('limit', String(args.limit))
+      const q = params.toString() ? `?${params.toString()}` : ''
+      return ultraFetch(`/v1/webhooks/deliveries${q}`)
+    }
+    case 'replay_webhook_delivery': {
+      const deliveryId = String(args.delivery_id ?? args.deliveryId ?? '')
+      if (!deliveryId) throw new Error('deliveryId required')
+      return ultraFetch(`/v1/webhooks/deliveries/${encodeURIComponent(deliveryId)}/replay`, {
+        method: 'POST'
+      })
+    }
+    case 'configure_webhook_reliability': {
+      return ultraFetch('/v1/sandbox/webhook-reliability', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          mode: args.mode ?? 'healthy',
+          fail_rate: args.fail_rate ?? args.failRate ?? 0,
+          latency_ms: args.latency_ms ?? args.latencyMs ?? 0,
+          status_code: args.status_code ?? args.statusCode ?? null
+        })
+      })
+    }
+    case 'run_webhook_reliability_scenario': {
+      const scenarioId = String(args.scenario_id ?? args.scenarioId ?? 'webhook_transient_recovery')
+      const profileMode = args.mode ?? 'transient_503'
+      await ultraFetch('/v1/sandbox/webhook-reliability', {
+        method: 'PATCH',
+        body: JSON.stringify({ mode: profileMode, fail_rate: 0.8 })
+      })
+      const connectionId = args.connection_id ?? args.connectionId ?? session.activeConnectionId
+      const body: Record<string, unknown> = {
+        patient_id: args.patient_id ?? args.patientId ?? 'pat_00000000_01'
+      }
+      if (connectionId) body.connection_id = connectionId
+      return ultraFetch(`/v1/sandbox/scenarios/${encodeURIComponent(scenarioId)}/run`, {
         method: 'POST',
         body: JSON.stringify(body)
       })
