@@ -36,9 +36,9 @@ The dev server loads `hebrah-mcp-host/.env` automatically at startup.
 | `hb_pat_*` | MCP session auth — dashboard reads/writes via PAT-scoped API |
 | `hb_test_*` (`HEBRAH_SANDBOX_API_KEY`) | Direct hebrah-api calls from the MCP host |
 
-`HEBRAH_SANDBOX_API_KEY` is required for `get_sandbox_catalog` and `trigger_test_webhook`. Without it, those tools error; PAT-only tools still work.
+`HEBRAH_SANDBOX_API_KEY` is required for hebrah-api sandbox tools (`get_sandbox_catalog`, `trigger_test_webhook`, `list_sandbox_domains`, `run_sandbox_scenario`, etc.). Without it, those tools error; PAT-only tools still work.
 
-## All 15 tools
+## All 21 tools
 
 | # | Tool | Purpose |
 |---|------|---------|
@@ -56,7 +56,13 @@ The dev server loads `hebrah-mcp-host/.env` automatically at startup.
 | 12 | `reject_promotion` | Reject open promotion |
 | 13 | `get_live_deployment` | Read-only: active version on Live connection |
 | 14 | `get_sandbox_catalog` | hebrah-api catalog (`HEBRAH_SANDBOX_API_KEY`) |
-| 15 | `trigger_test_webhook` | Queue mock clinical event (`HEBRAH_SANDBOX_API_KEY`) |
+| 15 | `trigger_test_webhook` | Queue mock event; supports `scenario_id` |
+| 16 | `list_sandbox_domains` | Discover sandbox domains |
+| 17 | `get_sandbox_domain` | Events + scenarios for one domain |
+| 18 | `get_synthetic_resource` | Synthetic FHIR fixture |
+| 19 | `run_sandbox_scenario` | Multi-step workflow runner |
+| 20 | `get_payer_rules` | Prior-auth payer stub |
+| 21 | `list_sandbox_events` | Event groups from catalog |
 
 Implementation: [src/tools.ts](./src/tools.ts).
 
@@ -65,10 +71,13 @@ Implementation: [src/tools.ts](./src/tools.ts).
 | Rule | Detail |
 |------|--------|
 | Writes | `update_connection_mapping`, `create_config_version` apply to **Sandbox** connections only |
-| Live | Read-only until an approved promotion deploys config |
-| Context | Call `set_active_connection` before mapping or promotion tools |
+| Live | Read-only until an approved **Pro-plan** promotion deploys config |
+| Promotions | **Pro plan only** — `get_account_status.canPromoteToLive` must be true |
+| Context | Call `set_active_connection` before mapping; promotion tools require Pro |
 
-## Promotion guardrails (`confirm_action` → `approve_promotion`)
+## Promotion guardrails (Pro plan — `confirm_action` → `approve_promotion`)
+
+Promotion MCP tools and dashboard **Promote to Live** require a **Pro plan**. The MCP host checks `canPromoteToLive` on `/api/org/status` before `create_promotion`, `get_promotion`, `confirm_action`, `approve_promotion`, or `reject_promotion`.
 
 Live sync requires a deliberate two-step confirmation. Skipping `confirm_action` or omitting `humanIntentMessage` causes `approve_promotion` to fail.
 
