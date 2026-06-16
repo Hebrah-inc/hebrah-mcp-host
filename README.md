@@ -38,31 +38,26 @@ The dev server loads `hebrah-mcp-host/.env` automatically at startup.
 
 `HEBRAH_SANDBOX_API_KEY` is required for hebrah-api sandbox tools (`get_sandbox_catalog`, `trigger_test_webhook`, `list_sandbox_domains`, `run_sandbox_scenario`, etc.). Without it, those tools error; PAT-only tools still work.
 
-## All 21 tools
+### Blast radius (multi-tenant hosted MCP)
+
+`HEBRAH_SANDBOX_API_KEY` is **org-wide** sandbox API access — not scoped by PAT. Never share one key across tenants on a shared MCP host. Prefer one host per org until per-PAT sandbox key injection ships. See [documentation/hosted-mcp.md](../documentation/hosted-mcp.md#blast-radius-sec-009).
+
+## All 37 tools
+
+Canonical numbered list: [documentation/hosted-mcp.md](../documentation/hosted-mcp.md#all-37-tools).
 
 | # | Tool | Purpose |
 |---|------|---------|
-| 1 | `set_active_connection` | Set sandbox `connectionId` context for subsequent tools |
-| 2 | `get_account_status` | Org status, keys, connections summary |
-| 3 | `list_connections` | All dashboard connections (including hidden system row) |
-| 4 | `get_connection_mapping` | Read HL7→FHIR mappings (sandbox) |
-| 5 | `update_connection_mapping` | Write mappings (sandbox only) |
-| 6 | `list_config_versions` | Immutable version history per sandbox connection |
-| 7 | `create_config_version` | Snapshot current sandbox config as new version |
-| 8 | `create_promotion` | Open promotion PR to sync version to Live |
-| 9 | `get_promotion` | Promotion detail and diff summary |
-| 10 | `confirm_action` | Issue short-lived token before `approve_promotion` |
-| 11 | `approve_promotion` | Approve and sync to Live (guarded) |
-| 12 | `reject_promotion` | Reject open promotion |
-| 13 | `get_live_deployment` | Read-only: active version on Live connection |
-| 14 | `get_sandbox_catalog` | hebrah-api catalog (`HEBRAH_SANDBOX_API_KEY`) |
-| 15 | `trigger_test_webhook` | Queue mock event; supports `scenario_id` |
-| 16 | `list_sandbox_domains` | Discover sandbox domains |
-| 17 | `get_sandbox_domain` | Events + scenarios for one domain |
-| 18 | `get_synthetic_resource` | Synthetic FHIR fixture |
-| 19 | `run_sandbox_scenario` | Multi-step workflow runner |
-| 20 | `get_payer_rules` | Prior-auth payer stub |
-| 21 | `list_sandbox_events` | Event groups from catalog |
+| 1–21 | *(baseline + Phases 1–2)* | Connection mapping, promotions, domains, scenarios, HL7, sidecar |
+| 22–29 | *(Phase 3)* | Webhook deliveries, replay, reliability profile/scenarios |
+| 30 | `register_smart_client` | Register SMART redirect URIs |
+| 31 | `start_smart_launch` | SMART launch context for patient |
+| 32 | `run_mpi_match` | MPI match API |
+| 33 | `run_mpi_scenario` | `mpi_duplicate_resolution` |
+| 34 | `get_practitioner_credentialing` | Practitioner fixtures |
+| 35 | `run_credentialing_scenario` | `credentialing_verify_practitioner` |
+| 36 | `run_aggregator_query` | Aggregator bundle query |
+| 37 | `run_aggregator_scenario` | Aggregator domain scenarios |
 
 Implementation: [src/tools.ts](./src/tools.ts).
 
