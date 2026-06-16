@@ -5,6 +5,7 @@ import {
   consumeConfirmationToken,
   issueConfirmationToken
 } from './guardrails.js'
+import { assertCanPromoteToLive } from './promotionGate.js'
 
 export type McpAuth = {
   pat: string
@@ -43,11 +44,7 @@ async function ultraFetch<T>(path: string, init?: RequestInit): Promise<T> {
 
 async function assertPromoteToLiveAllowed(pat: string): Promise<void> {
   const status = await dashboardFetch<{ canPromoteToLive?: boolean }>(pat, '/api/org/status')
-  if (!status.canPromoteToLive) {
-    throw new Error(
-      'Promote-to-Live requires a Pro plan. Upgrade your organization to use promotion tools (create_promotion, approve_promotion, etc.).'
-    )
-  }
+  assertCanPromoteToLive(status.canPromoteToLive)
 }
 
 async function dashboardFetch<T>(pat: string, path: string, init?: RequestInit): Promise<T> {
@@ -94,7 +91,15 @@ export const toolDefinitions = [
   { name: 'list_webhook_deliveries', description: 'List outbound webhook delivery records with retry status' },
   { name: 'replay_webhook_delivery', description: 'Replay a stored webhook envelope by delivery id' },
   { name: 'configure_webhook_reliability', description: 'Set sandbox webhook reliability/chaos profile' },
-  { name: 'run_webhook_reliability_scenario', description: 'Configure profile and run webhook reliability scenario' }
+  { name: 'run_webhook_reliability_scenario', description: 'Configure profile and run webhook reliability scenario' },
+  { name: 'register_smart_client', description: 'Register SMART OAuth client (client_id, redirect_uris) for sandbox launch' },
+  { name: 'start_smart_launch', description: 'Create SMART launch context for a sandbox patient (returns launch token + authorize URL)' },
+  { name: 'run_mpi_match', description: 'Run synthetic MPI patient match (returns Parameters + duplicate pair)' },
+  { name: 'run_mpi_scenario', description: 'Run MPI sandbox scenario (e.g. mpi_merge_workflow)' },
+  { name: 'get_practitioner_credentialing', description: 'Fetch Practitioner + role + VerificationResult fixture bundle' },
+  { name: 'run_credentialing_scenario', description: 'Run credentialing sandbox scenario (e.g. credentialing_happy_path)' },
+  { name: 'run_aggregator_query', description: 'Submit synthetic aggregator/HIE query; returns consolidated Bundle' },
+  { name: 'run_aggregator_scenario', description: 'Run aggregator sandbox scenario (e.g. aggregator_pull_happy_path)' }
 ]
 
 export async function callTool(
@@ -103,7 +108,7 @@ export async function callTool(
   name: string,
   args: Record<string, unknown>
 ): Promise<unknown> {
-  checkRateLimit(auth.orgId, name)
+  await checkRateLimit(auth.orgId, name)
   const session = getSession(sessionId)
 
   switch (name) {
@@ -191,7 +196,7 @@ export async function callTool(
         throw new Error('humanIntentMessage required to approve a Live promotion')
       }
       consumeConfirmationToken(token, prId)
-      checkPromotionApproveLimit(auth.orgId)
+      await checkPromotionApproveLimit(auth.orgId)
       return dashboardFetch(
         auth.pat,
         `/api/connections/${encodeURIComponent(connId)}/promotions/${encodeURIComponent(prId)}/approve`,
@@ -376,6 +381,87 @@ export async function callTool(
       const body: Record<string, unknown> = {
         patient_id: args.patient_id ?? args.patientId ?? 'pat_00000000_01'
       }
+      if (connectionId) body.connection_id = connectionId
+      return ultraFetch(`/v1/sandbox/scenarios/${encodeURIComponent(scenarioId)}/run`, {
+        method: 'POST',
+        body: JSON.stringify(body)
+      })
+    }
+    case 'register_smart_client':
+      return dashboardFetch(auth.pat, '/api/smart/clients', {
+        method: 'POST',
+        body: JSON.stringify({
+          client_id: args.client_id ?? args.clientId,
+          name: args.name ?? 'MCP SMART client',
+          redirect_uris: args.redirect_uris ?? args.redirectUris ?? []
+        })
+      })
+    case 'start_smart_launch':
+      return dashboardFetch(auth.pat, '/api/smart/launch', {
+        method: 'POST',
+        body: JSON.stringify({
+          patient_id: args.patient_id ?? args.patientId,
+          encounter_id: args.encounter_id ?? args.encounterId ?? null,
+          smart_app_url: args.smart_app_url ?? args.smartAppUrl ?? null
+        })
+      })
+    case 'run_mpi_match':
+      return ultraFetch('/v1/sandbox/mpi/match', {
+        method: 'POST',
+        body: JSON.stringify({
+          first_name: args.first_name ?? args.firstName,
+          last_name: args.last_name ?? args.lastName,
+          birth_date: args.birth_date ?? args.birthDate,
+          identifier: args.identifier
+        })
+      })
+    case 'run_mpi_scenario': {
+      const scenarioId = String(args.scenarioId ?? args.scenario_id ?? 'mpi_duplicate_resolution')
+      const body: Record<string, unknown> = {
+        patient_id: args.patient_id ?? args.patientId ?? 'pat_00000000_01'
+      }
+      const connectionId = args.connection_id ?? args.connectionId ?? session.activeConnectionId
+      if (connectionId) body.connection_id = connectionId
+      return ultraFetch(`/v1/sandbox/scenarios/${encodeURIComponent(scenarioId)}/run`, {
+        method: 'POST',
+        body: JSON.stringify(body)
+      })
+    }
+    case 'get_practitioner_credentialing': {
+      const practitionerId = String(args.practitioner_id ?? args.practitionerId ?? 'prac_01')
+      const params = new URLSearchParams()
+      if (args.include_role === false) params.set('include_role', 'false')
+      if (args.include_verification === false) params.set('include_verification', 'false')
+      const q = params.toString() ? `?${params.toString()}` : ''
+      return ultraFetch(`/v1/sandbox/credentialing/practitioners/${encodeURIComponent(practitionerId)}${q}`)
+    }
+    case 'run_credentialing_scenario': {
+      const scenarioId = String(args.scenarioId ?? args.scenario_id ?? 'credentialing_verify_practitioner')
+      const body: Record<string, unknown> = {
+        patient_id: args.patient_id ?? args.patientId ?? 'pat_00000000_01'
+      }
+      const connectionId = args.connection_id ?? args.connectionId ?? session.activeConnectionId
+      if (connectionId) body.connection_id = connectionId
+      return ultraFetch(`/v1/sandbox/scenarios/${encodeURIComponent(scenarioId)}/run`, {
+        method: 'POST',
+        body: JSON.stringify(body)
+      })
+    }
+    case 'run_aggregator_query':
+      return ultraFetch('/v1/sandbox/aggregator/query', {
+        method: 'POST',
+        body: JSON.stringify({
+          patient_id: args.patient_id ?? args.patientId ?? 'pat_00000000_01',
+          include_consent: args.include_consent ?? args.includeConsent ?? true,
+          include_provenance: args.include_provenance ?? args.includeProvenance ?? true
+        })
+      })
+    case 'run_aggregator_scenario': {
+      const scenarioId = String(args.scenarioId ?? args.scenario_id ?? 'aggregator_query_bundle')
+      const body: Record<string, unknown> = {
+        patient_id: args.patient_id ?? args.patientId ?? 'pat_00000000_01'
+      }
+      const connectionId = args.connection_id ?? args.connectionId ?? session.activeConnectionId
       if (connectionId) body.connection_id = connectionId
       return ultraFetch(`/v1/sandbox/scenarios/${encodeURIComponent(scenarioId)}/run`, {
         method: 'POST',
