@@ -1,5 +1,10 @@
 import { config } from './config.js'
 import {
+  type McpAcl,
+  assertMcpConnectionActionAllowed,
+  normalizeMcpAcl
+} from './connectionPolicyGate.js'
+import {
   checkPromotionApproveLimit,
   checkRateLimit,
   consumeConfirmationToken,
@@ -11,6 +16,7 @@ export type McpAuth = {
   pat: string
   orgId: string
   tokenId: string
+  mcpAcl: McpAcl
 }
 
 const sessions = new Map<string, { activeConnectionId?: string }>()
@@ -66,13 +72,17 @@ export const toolDefinitions = [
   { name: 'set_active_connection', description: 'Set the sandbox connection context for subsequent tools' },
   { name: 'get_account_status', description: 'Org status and connections summary' },
   { name: 'list_connections', description: 'List dashboard connections' },
+  { name: 'create_connection', description: 'Create a sandbox + live connection pair (sandbox id returned as active context)' },
+  { name: 'pause_connection', description: 'Pause a connection (blocks dashboard writes until resumed)' },
+  { name: 'resume_connection', description: 'Resume a paused connection' },
+  { name: 'remove_connection', description: 'Remove a deletable connection pair (requires confirm_action token)' },
   { name: 'get_connection_mapping', description: 'Get HL7→FHIR mappings (sandbox only)' },
   { name: 'update_connection_mapping', description: 'Update mappings on sandbox connection only' },
   { name: 'list_config_versions', description: 'List sandbox config versions' },
   { name: 'create_config_version', description: 'Snapshot current sandbox config as a new version' },
   { name: 'create_promotion', description: 'Pro plan: open a promotion (PR) to sync sandbox version to Live' },
   { name: 'get_promotion', description: 'Pro plan: promotion detail and diff summary' },
-  { name: 'confirm_action', description: 'Pro plan: issue a confirmation token before approve_promotion' },
+  { name: 'confirm_action', description: 'Issue a confirmation token before approve_promotion or remove_connection' },
   { name: 'approve_promotion', description: 'Pro plan: approve & sync to Live (requires confirm_action token)' },
   { name: 'reject_promotion', description: 'Pro plan: reject an open promotion' },
   { name: 'get_live_deployment', description: 'Read-only: what version is deployed on Live' },
@@ -129,6 +139,73 @@ export async function callTool(
       return dashboardFetch(auth.pat, '/api/org/status')
     case 'list_connections':
       return dashboardFetch(auth.pat, '/api/connections?includeHidden=true')
+    case 'create_connection': {
+      assertMcpConnectionActionAllowed(auth.mcpAcl, 'creation')
+      const name = String(args.name ?? '').trim()
+      if (!name) {
+        throw new Error('name is required for create_connection')
+      }
+      const body: Record<string, unknown> = { name }
+      if (args.ehrVendor) body.ehrVendor = args.ehrVendor
+      if (args.dataFormat) body.dataFormat = args.dataFormat
+      if (args.resourceTypes) body.resourceTypes = args.resourceTypes
+      const result = await dashboardFetch<{
+        sandboxConnectionId: string
+        liveConnectionId: string
+        provisioningUrl: string
+      }>(auth.pat, '/api/connections/sandbox', {
+        method: 'POST',
+        body: JSON.stringify(body)
+      })
+      session.activeConnectionId = result.sandboxConnectionId
+      return {
+        ...result,
+        activeConnectionId: result.sandboxConnectionId,
+        note: 'Sandbox connection set as active context. Edits apply to Sandbox only.'
+      }
+    }
+    case 'pause_connection': {
+      assertMcpConnectionActionAllowed(auth.mcpAcl, 'pause')
+      const id = String(args.connectionId ?? session.activeConnectionId ?? '')
+      if (!id) {
+        throw new Error('connectionId is required for pause_connection')
+      }
+      return dashboardFetch(auth.pat, `/api/connections/${encodeURIComponent(id)}/pause`, {
+        method: 'PATCH'
+      })
+    }
+    case 'resume_connection': {
+      assertMcpConnectionActionAllowed(auth.mcpAcl, 'pause')
+      const id = String(args.connectionId ?? session.activeConnectionId ?? '')
+      if (!id) {
+        throw new Error('connectionId is required for resume_connection')
+      }
+      return dashboardFetch(auth.pat, `/api/connections/${encodeURIComponent(id)}/resume`, {
+        method: 'PATCH'
+      })
+    }
+    case 'remove_connection': {
+      assertMcpConnectionActionAllowed(auth.mcpAcl, 'removal')
+      const id = String(args.connectionId ?? session.activeConnectionId ?? '')
+      if (!id) {
+        throw new Error('connectionId is required for remove_connection')
+      }
+      const token = String(args.confirmationToken ?? '')
+      const intent = String(args.humanIntentMessage ?? '')
+      if (!intent.trim()) {
+        throw new Error('humanIntentMessage required to remove a connection')
+      }
+      consumeConfirmationToken(token, 'remove_connection', id)
+      const result = await dashboardFetch<{ removedConnectionIds: string[] }>(
+        auth.pat,
+        `/api/connections/${encodeURIComponent(id)}`,
+        { method: 'DELETE' }
+      )
+      if (session.activeConnectionId && result.removedConnectionIds.includes(session.activeConnectionId)) {
+        session.activeConnectionId = undefined
+      }
+      return result
+    }
     case 'get_connection_mapping': {
       const id = String(args.connectionId ?? session.activeConnectionId ?? '')
       return dashboardFetch(auth.pat, `/api/connections/${encodeURIComponent(id)}/mapping`)
@@ -174,15 +251,34 @@ export async function callTool(
       )
     }
     case 'confirm_action': {
+      const action = String(args.action ?? (args.promotionId ? 'approve_promotion' : args.connectionId ? 'remove_connection' : ''))
+      if (action === 'remove_connection') {
+        assertMcpConnectionActionAllowed(auth.mcpAcl, 'removal')
+        const connectionId = String(args.connectionId ?? session.activeConnectionId ?? '')
+        if (!connectionId) {
+          throw new Error('connectionId required for confirm_action(remove_connection)')
+        }
+        const token = issueConfirmationToken('remove_connection', connectionId)
+        return {
+          confirmationToken: token,
+          expiresInSeconds: 300,
+          action: 'remove_connection',
+          connectionId,
+          message: 'Pass confirmationToken and humanIntentMessage to remove_connection.'
+        }
+      }
+
       await assertPromoteToLiveAllowed(auth.pat)
       const promotionId = String(args.promotionId ?? '')
       if (!promotionId) {
-        throw new Error('promotionId required for confirm_action')
+        throw new Error('promotionId required for confirm_action(approve_promotion), or pass action=remove_connection with connectionId')
       }
-      const token = issueConfirmationToken(promotionId)
+      const token = issueConfirmationToken('approve_promotion', promotionId)
       return {
         confirmationToken: token,
         expiresInSeconds: 300,
+        action: 'approve_promotion',
+        promotionId,
         message: 'Pass confirmationToken to approve_promotion with human-intent acknowledgment.'
       }
     }
@@ -195,7 +291,7 @@ export async function callTool(
       if (!intent.trim()) {
         throw new Error('humanIntentMessage required to approve a Live promotion')
       }
-      consumeConfirmationToken(token, prId)
+      consumeConfirmationToken(token, 'approve_promotion', prId)
       await checkPromotionApproveLimit(auth.orgId)
       return dashboardFetch(
         auth.pat,
@@ -483,5 +579,11 @@ export async function validatePat(pat: string) {
     body: JSON.stringify({ token: pat })
   })
   if (!res.ok) return null
-  return res.json() as Promise<{ orgId: string, tokenId: string, scopes: string[] }>
+  const data = await res.json() as { orgId: string, tokenId: string, scopes: string[], mcpAcl?: Partial<McpAcl> }
+  return {
+    orgId: data.orgId,
+    tokenId: data.tokenId,
+    scopes: data.scopes,
+    mcpAcl: normalizeMcpAcl(data.mcpAcl)
+  }
 }

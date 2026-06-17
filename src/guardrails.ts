@@ -8,11 +8,19 @@ const MAX_CALLS_PER_WINDOW = 120
 const MAX_PROMOTION_APPROVES_PER_DAY = 10
 const CONFIRM_TTL_MS = 5 * 60_000
 
+export type ConfirmationAction = 'approve_promotion' | 'remove_connection'
+
+type PendingConfirmation = {
+  action: ConfirmationAction
+  targetId: string
+  expiresAt: number
+}
+
 type Bucket = { count: number, windowStart: number }
 
 const callBuckets = new Map<string, Bucket>()
 const approveBuckets = new Map<string, { count: number, dayStart: number }>()
-const pendingConfirmations = new Map<string, { promotionId: string, expiresAt: number }>()
+const pendingConfirmations = new Map<string, PendingConfirmation>()
 
 function dayKey(orgId: string) {
   const d = new Date()
@@ -53,22 +61,30 @@ export async function checkPromotionApproveLimit(orgId: string): Promise<void> {
   })
 }
 
-export function issueConfirmationToken(promotionId: string): string {
+export function issueConfirmationToken(
+  action: ConfirmationAction,
+  targetId: string
+): string {
   const token = `confirm_${crypto.randomUUID().replace(/-/g, '')}`
   pendingConfirmations.set(token, {
-    promotionId,
+    action,
+    targetId,
     expiresAt: Date.now() + CONFIRM_TTL_MS
   })
   return token
 }
 
-export function consumeConfirmationToken(token: string, promotionId: string): void {
+export function consumeConfirmationToken(
+  token: string,
+  action: ConfirmationAction,
+  targetId: string
+): void {
   const entry = pendingConfirmations.get(token)
   if (!entry || entry.expiresAt < Date.now()) {
     throw new Error('Invalid or expired confirmation token. Call confirm_action first.')
   }
-  if (entry.promotionId !== promotionId) {
-    throw new Error('Confirmation token does not match this promotion.')
+  if (entry.action !== action || entry.targetId !== targetId) {
+    throw new Error('Confirmation token does not match this action.')
   }
   pendingConfirmations.delete(token)
 }

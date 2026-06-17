@@ -42,9 +42,9 @@ The dev server loads `hebrah-mcp-host/.env` automatically at startup.
 
 `HEBRAH_SANDBOX_API_KEY` is **org-wide** sandbox API access — not scoped by PAT. Never share one key across tenants on a shared MCP host. Prefer one host per org until per-PAT sandbox key injection ships. See [documentation/hosted-mcp.md](../documentation/hosted-mcp.md#blast-radius-sec-009).
 
-## All 37 tools
+## All 41 tools
 
-Canonical numbered list: [documentation/hosted-mcp.md](../documentation/hosted-mcp.md#all-37-tools).
+Canonical numbered list: [documentation/hosted-mcp.md](../documentation/hosted-mcp.md#all-41-tools).
 
 | # | Tool | Purpose |
 |---|------|---------|

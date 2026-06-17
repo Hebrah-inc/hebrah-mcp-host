@@ -9,12 +9,20 @@ import {
 } from '@modelcontextprotocol/sdk/types.js'
 import { config } from './config.js'
 import { logMcpAudit } from './audit.js'
+import { filterToolsForAcl } from './connectionPolicyGate.js'
 import { callTool, toolDefinitions, validatePat, type McpAuth } from './tools.js'
 
 function extractPat(authHeader: string | undefined): string | null {
   if (!authHeader?.startsWith('Bearer ')) return null
   const token = authHeader.slice(7).trim()
   return token.startsWith('hb_pat_') ? token : null
+}
+
+function policyDecisionFromError(message: string): string {
+  if (message.includes('read-only')) return 'deny_live_write'
+  if (message.includes('disabled for this organization')) return 'deny_mcp_acl'
+  if (message.includes('humanIntentMessage') || message.includes('confirm_action')) return 'deny_remove_confirm'
+  return 'error'
 }
 
 function createMcpServer(auth: McpAuth, sessionId: string) {
@@ -24,12 +32,19 @@ function createMcpServer(auth: McpAuth, sessionId: string) {
   )
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: toolDefinitions.map(t => ({
+    tools: filterToolsForAcl(toolDefinitions, auth.mcpAcl).map(t => ({
       ...t,
       inputSchema: {
         type: 'object',
         properties: {
           connectionId: { type: 'string' },
+          name: { type: 'string' },
+          ehrVendor: { type: 'string' },
+          dataFormat: { type: 'string' },
+          resourceTypes: { type: 'array' },
+          action: { type: 'string' },
+          confirmationToken: { type: 'string' },
+          humanIntentMessage: { type: 'string' },
           mappings: { type: 'array' },
           toVersionId: { type: 'string' },
           title: { type: 'string' },
@@ -62,7 +77,8 @@ function createMcpServer(auth: McpAuth, sessionId: string) {
         tokenId: auth.tokenId,
         sessionId,
         toolName: name,
-        policyDecision: message.includes('read-only') ? 'deny_live_write' : 'error',
+        connectionId: typeof args.connectionId === 'string' ? args.connectionId : undefined,
+        policyDecision: policyDecisionFromError(message),
         outcome: 'error'
       })
       return { content: [{ type: 'text', text: message }], isError: true }
@@ -70,6 +86,47 @@ function createMcpServer(auth: McpAuth, sessionId: string) {
   })
 
   return server
+}
+
+interface McpSession {
+  transport: WebStandardStreamableHTTPServerTransport
+  server: Server
+  auth: McpAuth
+}
+
+const mcpSessions = new Map<string, McpSession>()
+
+function sessionNotFoundResponse(): Response {
+  return new Response(
+    JSON.stringify({
+      jsonrpc: '2.0',
+      error: { code: -32001, message: 'Session not found' },
+      id: null
+    }),
+    { status: 404, headers: { 'Content-Type': 'application/json' } }
+  )
+}
+
+async function createMcpSession(auth: McpAuth): Promise<McpSession> {
+  const sessionId = crypto.randomUUID()
+  const server = createMcpServer(auth, sessionId)
+  let sessionRef: McpSession | null = null
+
+  const transport = new WebStandardStreamableHTTPServerTransport({
+    sessionIdGenerator: () => sessionId,
+    onsessioninitialized: (sid) => {
+      if (sessionRef) {
+        mcpSessions.set(sid, sessionRef)
+      }
+    },
+    onsessionclosed: (sid) => {
+      mcpSessions.delete(sid)
+    }
+  })
+
+  sessionRef = { transport, server, auth }
+  await server.connect(transport)
+  return sessionRef
 }
 
 const app = new Hono()
@@ -90,18 +147,29 @@ app.all('/mcp', async (c) => {
   const auth: McpAuth = {
     pat,
     orgId: validated.orgId,
-    tokenId: validated.tokenId
+    tokenId: validated.tokenId,
+    mcpAcl: validated.mcpAcl
   }
 
-  const sessionId = c.req.header('mcp-session-id') ?? crypto.randomUUID()
+  const requestSessionId = c.req.header('mcp-session-id') ?? undefined
 
-  const server = createMcpServer(auth, sessionId)
-  const transport = new WebStandardStreamableHTTPServerTransport({
-    sessionIdGenerator: () => sessionId
-  })
+  if (requestSessionId) {
+    const existing = mcpSessions.get(requestSessionId)
+    if (existing) {
+      if (existing.auth.orgId !== auth.orgId) {
+        return c.json({ error: 'Session belongs to another organization' }, 403)
+      }
+      const response = await existing.transport.handleRequest(c.req.raw)
+      if (c.req.method === 'DELETE') {
+        mcpSessions.delete(requestSessionId)
+      }
+      return response
+    }
+    return sessionNotFoundResponse()
+  }
 
-  await server.connect(transport)
-  return transport.handleRequest(c.req.raw)
+  const session = await createMcpSession(auth)
+  return session.transport.handleRequest(c.req.raw)
 })
 
 serve({ fetch: app.fetch, port: config.port }, () => {
