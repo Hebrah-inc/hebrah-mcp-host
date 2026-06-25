@@ -72,7 +72,7 @@ export const toolDefinitions = [
   { name: 'set_active_connection', description: 'Set the sandbox connection context for subsequent tools' },
   { name: 'get_account_status', description: 'Org status and connections summary' },
   { name: 'list_connections', description: 'List dashboard connections' },
-  { name: 'create_connection', description: 'Create a sandbox + live connection pair (sandbox id returned as active context)' },
+  { name: 'create_connection', description: 'Create a sandbox + live connection pair (requires name and ehrVendor: Epic|Cerner|Athena; use list_ehr_base_models for catalog)' },
   { name: 'pause_connection', description: 'Pause a connection (blocks dashboard writes until resumed)' },
   { name: 'resume_connection', description: 'Resume a paused connection' },
   { name: 'remove_connection', description: 'Remove a deletable connection pair (requires confirm_action token)' },
@@ -109,7 +109,11 @@ export const toolDefinitions = [
   { name: 'get_practitioner_credentialing', description: 'Fetch Practitioner + role + VerificationResult fixture bundle' },
   { name: 'run_credentialing_scenario', description: 'Run credentialing sandbox scenario (e.g. credentialing_happy_path)' },
   { name: 'run_aggregator_query', description: 'Submit synthetic aggregator/HIE query; returns consolidated Bundle' },
-  { name: 'run_aggregator_scenario', description: 'Run aggregator sandbox scenario (e.g. aggregator_pull_happy_path)' }
+  { name: 'run_aggregator_scenario', description: 'Run aggregator sandbox scenario (e.g. aggregator_pull_happy_path)' },
+  { name: 'get_synthetic_ehr_profile', description: 'Vendor model + endpoints for active connection synthetic EHR' },
+  { name: 'list_ehr_base_models', description: 'List Epic/Cerner/Athena base EHR model packs' },
+  { name: 'reset_synthetic_ehr_data', description: 'Re-seed VM synthetic EHR store from model pack' },
+  { name: 'get_connection_developer_doc', description: 'Rendered markdown integration reference for active connection' }
 ]
 
 export async function callTool(
@@ -145,8 +149,16 @@ export async function callTool(
       if (!name) {
         throw new Error('name is required for create_connection')
       }
-      const body: Record<string, unknown> = { name }
-      if (args.ehrVendor) body.ehrVendor = args.ehrVendor
+      const ehrVendor = String(args.ehrVendor ?? args.ehr_vendor ?? '').trim()
+      if (!ehrVendor) {
+        throw new Error('ehrVendor is required for create_connection (Epic, Cerner, or Athena). Call list_ehr_base_models for the catalog.')
+      }
+      const allowed = ['Epic', 'Cerner', 'Athena']
+      const normalized = allowed.find(v => v.toLowerCase() === ehrVendor.toLowerCase())
+      if (!normalized) {
+        throw new Error(`ehrVendor must be one of: ${allowed.join(', ')}`)
+      }
+      const body: Record<string, unknown> = { name, ehrVendor: normalized }
       if (args.dataFormat) body.dataFormat = args.dataFormat
       if (args.resourceTypes) body.resourceTypes = args.resourceTypes
       const result = await dashboardFetch<{
@@ -564,20 +576,50 @@ export async function callTool(
         body: JSON.stringify(body)
       })
     }
+    case 'get_synthetic_ehr_profile': {
+      const connectionId = args.connection_id ?? args.connectionId ?? session.activeConnectionId
+      const q = connectionId ? `?connection_id=${encodeURIComponent(String(connectionId))}` : ''
+      return ultraFetch(`/v1/sandbox/synthetic-ehr/profile${q}`)
+    }
+    case 'list_ehr_base_models':
+      return ultraFetch('/v1/sandbox/ehr-models')
+    case 'reset_synthetic_ehr_data': {
+      const connectionId = args.connection_id ?? args.connectionId ?? session.activeConnectionId
+      const q = connectionId ? `?connection_id=${encodeURIComponent(String(connectionId))}` : ''
+      return ultraFetch(`/v1/sandbox/synthetic-ehr/reset${q}`, { method: 'POST' })
+    }
+    case 'get_connection_developer_doc': {
+      const id = String(args.connectionId ?? args.connection_id ?? session.activeConnectionId ?? '')
+      if (!id) throw new Error('connectionId required for get_connection_developer_doc')
+      return dashboardFetch(auth.pat, `/api/connections/${encodeURIComponent(id)}/developer-doc`)
+    }
     default:
       throw new Error(`Unknown tool: ${name}`)
   }
 }
 
+const PAT_VALIDATE_TIMEOUT_MS = 10_000
+
 export async function validatePat(pat: string) {
-  const res = await fetch(`${config.dashboardUrl}/api/internal/mcp/validate-pat`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-hebrah-mcp-internal-secret': config.mcpInternalSecret
-    },
-    body: JSON.stringify({ token: pat })
-  })
+  let res: Response
+  try {
+    res = await fetch(`${config.dashboardUrl}/api/internal/mcp/validate-pat`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-hebrah-mcp-internal-secret': config.mcpInternalSecret
+      },
+      body: JSON.stringify({ token: pat }),
+      signal: AbortSignal.timeout(PAT_VALIDATE_TIMEOUT_MS)
+    })
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    console.error(`[hebrah-mcp-host] PAT validation unreachable (${config.dashboardUrl}):`, detail)
+    throw new Error(
+      `Dashboard unreachable at ${config.dashboardUrl}. Start hebrah-app (pnpm dev in hebrah-app/) and reload MCP in Cursor.`
+    )
+  }
+
   if (!res.ok) return null
   const data = await res.json() as { orgId: string, tokenId: string, scopes: string[], mcpAcl?: Partial<McpAcl> }
   return {
