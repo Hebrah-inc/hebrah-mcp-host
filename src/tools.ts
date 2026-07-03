@@ -113,7 +113,8 @@ export const toolDefinitions = [
   { name: 'get_synthetic_ehr_profile', description: 'Vendor model + endpoints for active connection synthetic EHR' },
   { name: 'list_ehr_base_models', description: 'List Epic/Cerner/Athena base EHR model packs' },
   { name: 'reset_synthetic_ehr_data', description: 'Re-seed VM synthetic EHR store from model pack' },
-  { name: 'get_connection_developer_doc', description: 'Rendered markdown integration reference for active connection' }
+  { name: 'get_connection_developer_doc', description: 'Rendered markdown integration reference for active connection' },
+  { name: 'propose_custom_ehr_model', description: 'Ingest doc text/URL and generate a BYOM draft model pack (apply via dashboard review gate)' }
 ]
 
 export async function callTool(
@@ -592,6 +593,33 @@ export async function callTool(
       const id = String(args.connectionId ?? args.connection_id ?? session.activeConnectionId ?? '')
       if (!id) throw new Error('connectionId required for get_connection_developer_doc')
       return dashboardFetch(auth.pat, `/api/connections/${encodeURIComponent(id)}/developer-doc`)
+    }
+    case 'propose_custom_ehr_model': {
+      const connectionId = String(args.connectionId ?? args.connection_id ?? session.activeConnectionId ?? '')
+      if (!connectionId) throw new Error('connectionId required for propose_custom_ehr_model')
+      const ingestBody: Record<string, unknown> = {}
+      if (args.url) ingestBody.url = String(args.url)
+      if (args.text) ingestBody.text = String(args.text)
+      if (!ingestBody.url && !ingestBody.text) {
+        throw new Error('text or url required for propose_custom_ehr_model')
+      }
+      const ingestJson = await dashboardFetch<{ chunk_id: string }>(
+        auth.pat,
+        `/api/connections/${encodeURIComponent(connectionId)}/byom/ingest`,
+        { method: 'POST', body: JSON.stringify(ingestBody) }
+      )
+      const generated = await dashboardFetch<Record<string, unknown>>(
+        auth.pat,
+        `/api/connections/${encodeURIComponent(connectionId)}/byom/generate`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ docChunkIds: [ingestJson.chunk_id] })
+        }
+      )
+      return {
+        ...generated,
+        note: 'Draft only. Apply via dashboard Developer Docs BYOM panel with confirm token.'
+      }
     }
     default:
       throw new Error(`Unknown tool: ${name}`)

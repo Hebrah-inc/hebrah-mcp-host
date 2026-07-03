@@ -19,6 +19,7 @@ export const config = {
   hebrahApiUrl: (process.env.HEBRAH_API_URL || 'http://localhost:8000').replace(/\/$/, ''),
   orchestratorUrl: (process.env.ORCHESTRATOR_URL || 'http://localhost:8090').replace(/\/$/, ''),
   orchestratorSecret: process.env.ORCHESTRATOR_SECRET || '',
+  integrationAgentUrl: (process.env.INTEGRATION_AGENT_URL || 'http://localhost:3050').replace(/\/$/, ''),
   sandboxApiKey: process.env.HEBRAH_SANDBOX_API_KEY || '',
   mcpInternalSecret: requireSecret('MCP_INTERNAL_SECRET')
 }
