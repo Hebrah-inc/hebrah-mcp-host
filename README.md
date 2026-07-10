@@ -55,7 +55,28 @@ Canonical numbered list: [documentation/hosted-mcp.md](../documentation/hosted-m
 | 42–46 | Synthetic EHR / BYOM | Profile, base models, reset, developer doc, propose custom model |
 | 47–51 | Credentials | Mint/list/revoke `hb_test_*`; set webhook URL; rotate `hbsec_*` |
 
-**Local demos:** after `create_connection`, call `create_sandbox_api_key` + `set_connection_webhook_url` + `rotate_connection_webhook_secret` and write plaintext once into the demo `.env`. Multiple active keys per connection are supported; plaintext is never re-fetched.
+**Local demos:** after `create_connection`, each credential write requires `confirm_action` first, then the write tool with `confirmationToken` + `humanIntentMessage`:
+
+```
+confirm_action(action=create_sandbox_api_key, connectionId) → create_sandbox_api_key(...)
+confirm_action(action=set_connection_webhook_url, connectionId) → set_connection_webhook_url(...)
+confirm_action(action=rotate_connection_webhook_secret, connectionId) → rotate_connection_webhook_secret(...)
+```
+
+Write plaintext once into the demo `.env`. Multiple active keys per connection are supported; plaintext is never re-fetched.
+
+## Credential write guardrails (`confirm_action` → credential tools)
+
+Credential writes that return or affect secrets require the same two-step confirmation as `remove_connection`:
+
+| Write tool | `confirm_action` action | Notes |
+|------------|-------------------------|-------|
+| `create_sandbox_api_key` | `create_sandbox_api_key` | Returns plaintext `hb_test_*` once |
+| `set_connection_webhook_url` | `set_connection_webhook_url` | Redirects webhook delivery |
+| `rotate_connection_webhook_secret` | `rotate_connection_webhook_secret` | Returns plaintext `hbsec_*` once |
+| `revoke_sandbox_api_key` | `revoke_sandbox_api_key` | Requires `keyId` on both steps |
+
+`list_sandbox_api_keys` is metadata-only (no gate). Tokens expire after ~5 minutes and are single-use.
 
 Implementation: [src/tools.ts](./src/tools.ts).
 
