@@ -42,22 +42,20 @@ The dev server loads `hebrah-mcp-host/.env` automatically at startup.
 
 `HEBRAH_SANDBOX_API_KEY` is **org-wide** sandbox API access — not scoped by PAT. Never share one key across tenants on a shared MCP host. Prefer one host per org until per-PAT sandbox key injection ships. See [documentation/hosted-mcp.md](../documentation/hosted-mcp.md#blast-radius-sec-009).
 
-## All 41 tools
+## All 51 tools
 
-Canonical numbered list: [documentation/hosted-mcp.md](../documentation/hosted-mcp.md#all-41-tools).
+Canonical numbered list: [documentation/hosted-mcp.md](../documentation/hosted-mcp.md#all-51-tools).
 
 | # | Tool | Purpose |
 |---|------|---------|
 | 1–21 | *(baseline + Phases 1–2)* | Connection mapping, promotions, domains, scenarios, HL7, sidecar |
-| 22–29 | *(Phase 3)* | Webhook deliveries, replay, reliability profile/scenarios |
-| 30 | `register_smart_client` | Register SMART redirect URIs |
-| 31 | `start_smart_launch` | SMART launch context for patient |
-| 32 | `run_mpi_match` | MPI match API |
-| 33 | `run_mpi_scenario` | `mpi_duplicate_resolution` |
-| 34 | `get_practitioner_credentialing` | Practitioner fixtures |
-| 35 | `run_credentialing_scenario` | `credentialing_verify_practitioner` |
-| 36 | `run_aggregator_query` | Aggregator bundle query |
-| 37 | `run_aggregator_scenario` | Aggregator domain scenarios |
+| 22–33 | *(Phase 3 + reliability)* | Webhook deliveries, replay, reliability profile/scenarios |
+| 34–35 | SMART | `register_smart_client`, `start_smart_launch` (PAT `connections:write`) |
+| 36–41 | Interop domains | MPI, credentialing, aggregator |
+| 42–46 | Synthetic EHR / BYOM | Profile, base models, reset, developer doc, propose custom model |
+| 47–51 | Credentials | Mint/list/revoke `hb_test_*`; set webhook URL; rotate `hbsec_*` |
+
+**Local demos:** after `create_connection`, call `create_sandbox_api_key` + `set_connection_webhook_url` + `rotate_connection_webhook_secret` and write plaintext once into the demo `.env`. Multiple active keys per connection are supported; plaintext is never re-fetched.
 
 Implementation: [src/tools.ts](./src/tools.ts).
 

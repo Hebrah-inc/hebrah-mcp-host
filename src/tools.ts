@@ -114,7 +114,12 @@ export const toolDefinitions = [
   { name: 'list_ehr_base_models', description: 'List Epic/Cerner/Athena base EHR model packs' },
   { name: 'reset_synthetic_ehr_data', description: 'Re-seed VM synthetic EHR store from model pack' },
   { name: 'get_connection_developer_doc', description: 'Rendered markdown integration reference for active connection' },
-  { name: 'propose_custom_ehr_model', description: 'Ingest doc text/URL and generate a BYOM draft model pack (apply via dashboard review gate)' }
+  { name: 'propose_custom_ehr_model', description: 'Ingest doc text/URL and generate a BYOM draft model pack (apply via dashboard review gate)' },
+  { name: 'create_sandbox_api_key', description: 'Mint an additional connection-scoped hb_test_* key (plaintext once; does not revoke siblings)' },
+  { name: 'list_sandbox_api_keys', description: 'List active sandbox API key metadata for a connection (no plaintext)' },
+  { name: 'revoke_sandbox_api_key', description: 'Revoke one sandbox API key by id (blocked if it is the last active key unless allowLast)' },
+  { name: 'set_connection_webhook_url', description: 'Set per-connection webhook URL override for sandbox delivery' },
+  { name: 'rotate_connection_webhook_secret', description: 'Rotate connection hbsec_* webhook secret (plaintext once)' }
 ]
 
 export async function callTool(
@@ -619,6 +624,93 @@ export async function callTool(
       return {
         ...generated,
         note: 'Draft only. Apply via dashboard Developer Docs BYOM panel with confirm token.'
+      }
+    }
+    case 'create_sandbox_api_key': {
+      const id = String(args.connectionId ?? args.connection_id ?? session.activeConnectionId ?? '')
+      if (!id) throw new Error('connectionId required for create_sandbox_api_key')
+      const body: Record<string, unknown> = {}
+      if (args.label !== undefined) body.label = args.label
+      const result = await dashboardFetch<{
+        sandboxApiKey: string
+        key: { id: string, keyPrefix: string, environment: string, createdAt: string, label: string | null }
+        note?: string
+      }>(auth.pat, `/api/connections/${encodeURIComponent(id)}/credentials/keys`, {
+        method: 'POST',
+        body: JSON.stringify(body)
+      })
+      return {
+        ...result,
+        connectionId: id,
+        note: result.note
+          ?? 'Plaintext is shown once — write HEBRAH_SANDBOX_API_KEY to your local demo .env immediately.'
+      }
+    }
+    case 'list_sandbox_api_keys': {
+      const id = String(args.connectionId ?? args.connection_id ?? session.activeConnectionId ?? '')
+      if (!id) throw new Error('connectionId required for list_sandbox_api_keys')
+      const creds = await dashboardFetch<{
+        connectionId: string
+        activeKeys?: Array<{ id: string, keyPrefix: string, environment: string, createdAt: string, label?: string | null }>
+        activeKey: { id: string, keyPrefix: string, environment: string, createdAt: string, label?: string | null } | null
+        webhookUrl: string | null
+        webhookSecretConfigured: boolean
+        webhookSecretMasked: string | null
+      }>(auth.pat, `/api/connections/${encodeURIComponent(id)}/credentials`)
+      return {
+        connectionId: creds.connectionId,
+        activeKeys: creds.activeKeys ?? (creds.activeKey ? [creds.activeKey] : []),
+        webhookUrl: creds.webhookUrl,
+        webhookSecretConfigured: creds.webhookSecretConfigured,
+        webhookSecretMasked: creds.webhookSecretMasked,
+        note: 'Metadata only — plaintext keys are never re-fetched.'
+      }
+    }
+    case 'revoke_sandbox_api_key': {
+      const id = String(args.connectionId ?? args.connection_id ?? session.activeConnectionId ?? '')
+      const keyId = String(args.keyId ?? args.key_id ?? '')
+      if (!id) throw new Error('connectionId required for revoke_sandbox_api_key')
+      if (!keyId) throw new Error('keyId required for revoke_sandbox_api_key')
+      const body: Record<string, unknown> = {}
+      if (args.allowLast === true || args.allow_last === true) body.allowLast = true
+      return dashboardFetch(
+        auth.pat,
+        `/api/connections/${encodeURIComponent(id)}/credentials/keys/${encodeURIComponent(keyId)}/revoke`,
+        { method: 'POST', body: JSON.stringify(body) }
+      )
+    }
+    case 'set_connection_webhook_url': {
+      const id = String(args.connectionId ?? args.connection_id ?? session.activeConnectionId ?? '')
+      if (!id) throw new Error('connectionId required for set_connection_webhook_url')
+      if (args.webhookUrl === undefined && args.webhook_url === undefined && args.inheritDefault !== true) {
+        throw new Error('webhookUrl is required (or set inheritDefault=true)')
+      }
+      const body: Record<string, unknown> = {}
+      if (args.inheritDefault === true || args.inherit_default === true) {
+        body.inheritDefault = true
+      } else {
+        body.webhookUrl = args.webhookUrl ?? args.webhook_url ?? null
+      }
+      return dashboardFetch(auth.pat, `/api/connections/${encodeURIComponent(id)}/webhook`, {
+        method: 'POST',
+        body: JSON.stringify(body)
+      })
+    }
+    case 'rotate_connection_webhook_secret': {
+      const id = String(args.connectionId ?? args.connection_id ?? session.activeConnectionId ?? '')
+      if (!id) throw new Error('connectionId required for rotate_connection_webhook_secret')
+      const result = await dashboardFetch<{
+        webhookSecret: string
+        note?: string
+        effective?: { webhookUrl: string | null }
+      }>(auth.pat, `/api/connections/${encodeURIComponent(id)}/webhook/rotate-secret`, {
+        method: 'POST'
+      })
+      return {
+        ...result,
+        connectionId: id,
+        note: result.note
+          ?? 'Plaintext is shown once — write HEBRAH_WEBHOOK_SECRET to your local demo .env immediately.'
       }
     }
     default:

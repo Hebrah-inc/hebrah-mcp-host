@@ -60,12 +60,51 @@ export function listToolInputSchema(toolName: string) {
           mappings: { type: 'array' as const, items: { type: 'object' as const } }
         }
       }
+    case 'create_sandbox_api_key':
+      return {
+        type: 'object' as const,
+        properties: {
+          connectionId: { type: 'string' as const },
+          label: { type: 'string' as const }
+        }
+      }
+    case 'list_sandbox_api_keys':
+      return {
+        type: 'object' as const,
+        properties: { connectionId: { type: 'string' as const } }
+      }
+    case 'revoke_sandbox_api_key':
+      return {
+        type: 'object' as const,
+        required: ['keyId'],
+        properties: {
+          connectionId: { type: 'string' as const },
+          keyId: { type: 'string' as const },
+          allowLast: { type: 'boolean' as const }
+        }
+      }
+    case 'set_connection_webhook_url':
+      return {
+        type: 'object' as const,
+        properties: {
+          connectionId: { type: 'string' as const },
+          webhookUrl: { type: 'string' as const },
+          inheritDefault: { type: 'boolean' as const }
+        }
+      }
+    case 'rotate_connection_webhook_secret':
+      return {
+        type: 'object' as const,
+        properties: { connectionId: { type: 'string' as const } }
+      }
   }
 
   if (
     toolName.endsWith('_connection')
     || toolName.includes('connection_')
     || toolName.startsWith('get_connection')
+    || toolName.includes('sandbox_api_key')
+    || toolName.includes('webhook')
   ) {
     return {
       type: 'object' as const,
