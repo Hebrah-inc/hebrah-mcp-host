@@ -29,3 +29,20 @@ describe('remove_connection confirmation tokens', () => {
     )
   })
 })
+
+describe('set_connection_webhook_url confirmation tokens', () => {
+  it('issues and consumes a set_connection_webhook_url token', () => {
+    const token = issueConfirmationToken('set_connection_webhook_url', 'conn-sa-abc')
+    assert.doesNotThrow(() =>
+      consumeConfirmationToken(token, 'set_connection_webhook_url', 'conn-sa-abc')
+    )
+  })
+
+  it('rejects token for wrong connection', () => {
+    const token = issueConfirmationToken('set_connection_webhook_url', 'conn-sa-abc')
+    assert.throws(
+      () => consumeConfirmationToken(token, 'set_connection_webhook_url', 'conn-sa-other'),
+      /does not match/
+    )
+  })
+})

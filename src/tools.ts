@@ -11,6 +11,12 @@ import {
   issueConfirmationToken
 } from './guardrails.js'
 import { assertCanPromoteToLive } from './promotionGate.js'
+import { buildSdkReference } from './sdkReference.js'
+import {
+  parseLocalAppUrlFromArgs,
+  resolveWebhookUrlFromSetArgs,
+  suggestedWebhookUrls
+} from './webhookUrl.js'
 
 export type McpAuth = {
   pat: string
@@ -82,16 +88,16 @@ export const toolDefinitions = [
   { name: 'create_config_version', description: 'Snapshot current sandbox config as a new version' },
   { name: 'create_promotion', description: 'Pro plan: open a promotion (PR) to sync sandbox version to Live' },
   { name: 'get_promotion', description: 'Pro plan: promotion detail and diff summary' },
-  { name: 'confirm_action', description: 'Issue a confirmation token before approve_promotion or remove_connection' },
+  { name: 'confirm_action', description: 'Issue a confirmation token before approve_promotion, remove_connection, or set_connection_webhook_url' },
   { name: 'approve_promotion', description: 'Pro plan: approve & sync to Live (requires confirm_action token)' },
   { name: 'reject_promotion', description: 'Pro plan: reject an open promotion' },
   { name: 'get_live_deployment', description: 'Read-only: what version is deployed on Live' },
-  { name: 'get_sandbox_catalog', description: 'hebrah-api sandbox catalog (optional connection_id)' },
-  { name: 'trigger_test_webhook', description: 'Trigger mock webhook (sandbox); supports event, scenario_id, connection_id' },
+  { name: 'get_sandbox_catalog', description: 'hebrah-api sandbox catalog (optional connection_id). For app code use @hebrah/sdk — see get_sdk_reference.' },
+  { name: 'trigger_test_webhook', description: 'Trigger mock webhook (sandbox); supports event, scenario_id, connection_id. For app code use @hebrah/sdk — see get_sdk_reference.' },
   { name: 'list_sandbox_domains', description: 'List sandbox domain definitions (clinical, documents, prior_auth, etc.)' },
   { name: 'get_sandbox_domain', description: 'Get one sandbox domain with events, resources, and scenarios' },
-  { name: 'get_synthetic_resource', description: 'Fetch synthetic FHIR resource by type and id' },
-  { name: 'run_sandbox_scenario', description: 'Run multi-step sandbox workflow scenario (e.g. prior_auth_happy_path)' },
+  { name: 'get_synthetic_resource', description: 'Fetch synthetic FHIR resource by type and id. For app code use @hebrah/sdk — see get_sdk_reference.' },
+  { name: 'run_sandbox_scenario', description: 'Run multi-step sandbox workflow scenario (e.g. prior_auth_happy_path). For app code use @hebrah/sdk — see get_sdk_reference.' },
   { name: 'get_payer_rules', description: 'Synthetic prior-auth payer rules stub' },
   { name: 'list_sandbox_events', description: 'List webhook events grouped by sandbox domain' },
   { name: 'list_hl7_templates', description: 'List injectable HL7 sandbox templates' },
@@ -114,7 +120,10 @@ export const toolDefinitions = [
   { name: 'list_ehr_base_models', description: 'List Epic/Cerner/Athena base EHR model packs' },
   { name: 'reset_synthetic_ehr_data', description: 'Re-seed VM synthetic EHR store from model pack' },
   { name: 'get_connection_developer_doc', description: 'Rendered markdown integration reference for active connection' },
-  { name: 'propose_custom_ehr_model', description: 'Ingest doc text/URL and generate a BYOM draft model pack (apply via dashboard review gate)' }
+  { name: 'get_connection_credentials', description: 'Read sandbox credentials metadata (webhook URL, secret configured, Docker URL hints). Pass localAppUrl or port for demo-app suggestions.' },
+  { name: 'set_connection_webhook_url', description: 'Set per-connection webhook URL override for local demo receiver (requires confirm_action token)' },
+  { name: 'propose_custom_ehr_model', description: 'Ingest doc text/URL and generate a BYOM draft model pack (apply via dashboard review gate)' },
+  { name: 'get_sdk_reference', description: 'Official @hebrah/sdk (Node) reference — install, API surface, MCP-to-SDK mapping. Do not web-search npm.' }
 ]
 
 export async function callTool(
@@ -281,10 +290,25 @@ export async function callTool(
         }
       }
 
+      if (action === 'set_connection_webhook_url') {
+        const connectionId = String(args.connectionId ?? session.activeConnectionId ?? '')
+        if (!connectionId) {
+          throw new Error('connectionId required for confirm_action(set_connection_webhook_url)')
+        }
+        const token = issueConfirmationToken('set_connection_webhook_url', connectionId)
+        return {
+          confirmationToken: token,
+          expiresInSeconds: 300,
+          action: 'set_connection_webhook_url',
+          connectionId,
+          message: 'Pass confirmationToken and humanIntentMessage to set_connection_webhook_url with webhookUrl or localAppUrl/port.'
+        }
+      }
+
       await assertPromoteToLiveAllowed(auth.pat)
       const promotionId = String(args.promotionId ?? '')
       if (!promotionId) {
-        throw new Error('promotionId required for confirm_action(approve_promotion), or pass action=remove_connection with connectionId')
+        throw new Error('promotionId required for confirm_action(approve_promotion), or pass action=remove_connection or action=set_connection_webhook_url with connectionId')
       }
       const token = issueConfirmationToken('approve_promotion', promotionId)
       return {
@@ -593,6 +617,73 @@ export async function callTool(
       const id = String(args.connectionId ?? args.connection_id ?? session.activeConnectionId ?? '')
       if (!id) throw new Error('connectionId required for get_connection_developer_doc')
       return dashboardFetch(auth.pat, `/api/connections/${encodeURIComponent(id)}/developer-doc`)
+    }
+    case 'get_connection_credentials': {
+      const connectionId = String(args.connectionId ?? args.connection_id ?? session.activeConnectionId ?? '')
+      if (!connectionId) {
+        throw new Error('connectionId required for get_connection_credentials')
+      }
+
+      const localAppUrl = String(args.localAppUrl ?? args.local_app_url ?? '').trim()
+      const query = localAppUrl
+        ? `?localAppUrl=${encodeURIComponent(localAppUrl)}`
+        : ''
+
+      const credentials = await dashboardFetch<Record<string, unknown>>(
+        auth.pat,
+        `/api/connections/${encodeURIComponent(connectionId)}/credentials${query}`
+      )
+
+      const urlInput = parseLocalAppUrlFromArgs(args)
+      const suggestions = Object.keys(urlInput).length > 0
+        ? suggestedWebhookUrls(urlInput)
+        : undefined
+
+      const note = credentials.webhookUrlNeedsDockerFix
+        ? 'hebrah-api in Docker cannot POST to localhost on the host. Use suggestedWebhookUrls.docker or set deliveryTarget=docker when calling set_connection_webhook_url.'
+        : undefined
+
+      return {
+        ...credentials,
+        ...(suggestions ? { suggestedWebhookUrls: suggestions } : {}),
+        ...(note ? { note } : {})
+      }
+    }
+    case 'set_connection_webhook_url': {
+      const connectionId = String(args.connectionId ?? args.connection_id ?? session.activeConnectionId ?? '')
+      if (!connectionId) {
+        throw new Error('connectionId required for set_connection_webhook_url')
+      }
+
+      const token = String(args.confirmationToken ?? '')
+      const intent = String(args.humanIntentMessage ?? '')
+      if (!intent.trim()) {
+        throw new Error('humanIntentMessage required to set connection webhook URL')
+      }
+      consumeConfirmationToken(token, 'set_connection_webhook_url', connectionId)
+
+      const webhookUrl = resolveWebhookUrlFromSetArgs(args)
+
+      const result = await dashboardFetch<{
+        effective?: { webhookUrl?: string | null }
+      }>(auth.pat, `/api/connections/${encodeURIComponent(connectionId)}/webhook`, {
+        method: 'POST',
+        body: JSON.stringify({
+          inheritDefault: false,
+          webhookUrl
+        })
+      })
+
+      return {
+        connectionId,
+        webhookUrl,
+        effectiveWebhookUrl: result.effective?.webhookUrl ?? webhookUrl,
+        note: 'Connection webhook override saved. Use trigger_test_webhook to verify delivery to your local receiver.'
+      }
+    }
+    case 'get_sdk_reference': {
+      const connectionId = String(args.connectionId ?? args.connection_id ?? session.activeConnectionId ?? '').trim()
+      return buildSdkReference(connectionId || undefined)
     }
     case 'propose_custom_ehr_model': {
       const connectionId = String(args.connectionId ?? args.connection_id ?? session.activeConnectionId ?? '')

@@ -42,9 +42,9 @@ The dev server loads `hebrah-mcp-host/.env` automatically at startup.
 
 `HEBRAH_SANDBOX_API_KEY` is **org-wide** sandbox API access — not scoped by PAT. Never share one key across tenants on a shared MCP host. Prefer one host per org until per-PAT sandbox key injection ships. See [documentation/hosted-mcp.md](../documentation/hosted-mcp.md#blast-radius-sec-009).
 
-## All 41 tools
+## All 42 tools
 
-Canonical numbered list: [documentation/hosted-mcp.md](../documentation/hosted-mcp.md#all-41-tools).
+Canonical numbered list: [documentation/hosted-mcp.md](../documentation/hosted-mcp.md#all-42-tools).
 
 | # | Tool | Purpose |
 |---|------|---------|
@@ -58,8 +58,13 @@ Canonical numbered list: [documentation/hosted-mcp.md](../documentation/hosted-m
 | 35 | `run_credentialing_scenario` | `credentialing_verify_practitioner` |
 | 36 | `run_aggregator_query` | Aggregator bundle query |
 | 37 | `run_aggregator_scenario` | Aggregator domain scenarios |
+| 38 | `get_sdk_reference` | Official `@hebrah/sdk` (Node) reference — install, API, MCP-to-SDK mapping |
 
 Implementation: [src/tools.ts](./src/tools.ts).
+
+### SDK reference sync
+
+`pnpm predev` / `pnpm prebuild` runs [scripts/sync-sdk-reference.mjs](./scripts/sync-sdk-reference.mjs), which embeds [hebrah-sdk-node/README.md](../hebrah-sdk-node/README.md) into `src/generated/nodeSdkReference.ts`. Agents should call `get_sdk_reference` instead of web-searching npm.
 
 ## Sandbox-only policy
 

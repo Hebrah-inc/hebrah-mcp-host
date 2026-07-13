@@ -40,6 +40,34 @@ export function listToolInputSchema(toolName: string) {
           confirmationToken: { type: 'string' as const }
         }
       }
+    case 'set_connection_webhook_url':
+      return {
+        type: 'object' as const,
+        required: ['confirmationToken', 'humanIntentMessage'],
+        properties: {
+          connectionId: { type: 'string' as const },
+          confirmationToken: { type: 'string' as const },
+          humanIntentMessage: { type: 'string' as const },
+          webhookUrl: { type: 'string' as const },
+          localAppUrl: { type: 'string' as const },
+          port: { type: 'number' as const },
+          host: { type: 'string' as const },
+          deliveryTarget: {
+            type: 'string' as const,
+            enum: ['docker', 'host', 'auto'] as const
+          }
+        }
+      }
+    case 'get_connection_credentials':
+      return {
+        type: 'object' as const,
+        properties: {
+          connectionId: { type: 'string' as const },
+          localAppUrl: { type: 'string' as const },
+          port: { type: 'number' as const },
+          host: { type: 'string' as const }
+        }
+      }
     case 'create_promotion':
       return {
         type: 'object' as const,
@@ -58,6 +86,13 @@ export function listToolInputSchema(toolName: string) {
         properties: {
           connectionId: { type: 'string' as const },
           mappings: { type: 'array' as const, items: { type: 'object' as const } }
+        }
+      }
+    case 'get_sdk_reference':
+      return {
+        type: 'object' as const,
+        properties: {
+          connectionId: { type: 'string' as const, description: 'Optional sandbox conn-sa-* for connection-scoped .env snippet' }
         }
       }
   }

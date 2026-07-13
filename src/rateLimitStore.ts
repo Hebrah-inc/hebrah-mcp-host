@@ -10,9 +10,15 @@ async function getRedis() {
     return null
   }
   try {
-    const { default: Redis } = await import('ioredis')
-    redisClient = new Redis(url, { maxRetriesPerRequest: 1, lazyConnect: true })
-    await redisClient.connect()
+    const mod = await import('ioredis')
+    type RedisClient = import('ioredis').default
+    const RedisCtor = mod.default as unknown as new (
+      url: string,
+      options?: { maxRetriesPerRequest?: number, lazyConnect?: boolean }
+    ) => RedisClient
+    const client = new RedisCtor(url, { maxRetriesPerRequest: 1, lazyConnect: true })
+    await client.connect()
+    redisClient = client
     return redisClient
   } catch {
     redisClient = null

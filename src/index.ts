@@ -49,10 +49,20 @@ function bodyHasInitialize(body: unknown): boolean {
   return isInitializeRequest(body)
 }
 
+const MCP_SERVER_INSTRUCTIONS = [
+  'Hebrah hosted MCP: use tools for sandbox exploration, dashboard config, and promotions.',
+  'For application integration code, use the official Node SDK @hebrah/sdk (npm install @hebrah/sdk).',
+  'Call get_sdk_reference for full SDK docs, API surface, and MCP-to-SDK mapping — do not web-search npm.',
+  'MCP uses hb_pat_* tokens; the SDK uses per-connection hb_test_* API keys from credential MCP tools.'
+].join(' ')
+
 function createMcpServer(auth: McpAuth, sessionId: string) {
   const server = new Server(
     { name: 'hebrah-hosted', version: '0.1.0' },
-    { capabilities: { tools: {} } }
+    {
+      capabilities: { tools: {} },
+      instructions: MCP_SERVER_INSTRUCTIONS
+    }
   )
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
