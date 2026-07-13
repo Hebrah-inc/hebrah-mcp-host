@@ -54,6 +54,8 @@ Canonical numbered list: [documentation/hosted-mcp.md](../documentation/hosted-m
 | 36–41 | Interop domains | MPI, credentialing, aggregator |
 | 42–46 | Synthetic EHR / BYOM | Profile, base models, reset, developer doc, propose custom model |
 | 47–51 | Credentials | Mint/list/revoke `hb_test_*`; set webhook URL; rotate `hbsec_*` |
+| — | `get_connection_credentials` | Read credentials metadata + Docker URL hints for local demos |
+| — | `get_sdk_reference` | Official `@hebrah/sdk` (Node) reference — install, API, MCP-to-SDK mapping |
 
 **Local demos:** after `create_connection`, each credential write requires `confirm_action` first, then the write tool with `confirmationToken` + `humanIntentMessage`:
 
@@ -72,13 +74,17 @@ Credential writes that return or affect secrets require the same two-step confir
 | Write tool | `confirm_action` action | Notes |
 |------------|-------------------------|-------|
 | `create_sandbox_api_key` | `create_sandbox_api_key` | Returns plaintext `hb_test_*` once |
-| `set_connection_webhook_url` | `set_connection_webhook_url` | Redirects webhook delivery |
+| `set_connection_webhook_url` | `set_connection_webhook_url` | Redirects webhook delivery; supports `localAppUrl` / `port` + `deliveryTarget` for Docker demos |
 | `rotate_connection_webhook_secret` | `rotate_connection_webhook_secret` | Returns plaintext `hbsec_*` once |
 | `revoke_sandbox_api_key` | `revoke_sandbox_api_key` | Requires `keyId` on both steps |
 
-`list_sandbox_api_keys` is metadata-only (no gate). Tokens expire after ~5 minutes and are single-use.
+`list_sandbox_api_keys` and `get_connection_credentials` are metadata-only (no gate). Tokens expire after ~5 minutes and are single-use.
 
 Implementation: [src/tools.ts](./src/tools.ts).
+
+### SDK reference sync
+
+`pnpm predev` / `pnpm prebuild` runs [scripts/sync-sdk-reference.mjs](./scripts/sync-sdk-reference.mjs), which embeds [hebrah-sdk-node/README.md](../hebrah-sdk-node/README.md) into `src/generated/nodeSdkReference.ts`. Agents should call `get_sdk_reference` instead of web-searching npm.
 
 ## Sandbox-only policy
 
