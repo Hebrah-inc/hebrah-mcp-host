@@ -23,10 +23,22 @@ export function listToolInputSchema(toolName: string) {
     case 'confirm_action':
       return {
         type: 'object' as const,
-        required: ['action', 'humanIntentMessage'],
+        required: ['action'],
         properties: {
-          action: { type: 'string' as const },
+          action: {
+            type: 'string' as const,
+            enum: [
+              'approve_promotion',
+              'remove_connection',
+              'create_sandbox_api_key',
+              'rotate_connection_webhook_secret',
+              'revoke_sandbox_api_key',
+              'set_connection_webhook_url'
+            ] as const
+          },
           connectionId: { type: 'string' as const },
+          promotionId: { type: 'string' as const },
+          keyId: { type: 'string' as const },
           humanIntentMessage: { type: 'string' as const }
         }
       }
@@ -34,10 +46,12 @@ export function listToolInputSchema(toolName: string) {
     case 'remove_connection':
       return {
         type: 'object' as const,
-        required: ['confirmationToken'],
+        required: ['confirmationToken', 'humanIntentMessage'],
         properties: {
           connectionId: { type: 'string' as const },
-          confirmationToken: { type: 'string' as const }
+          promotionId: { type: 'string' as const },
+          confirmationToken: { type: 'string' as const },
+          humanIntentMessage: { type: 'string' as const }
         }
       }
     case 'create_promotion':
@@ -60,12 +74,64 @@ export function listToolInputSchema(toolName: string) {
           mappings: { type: 'array' as const, items: { type: 'object' as const } }
         }
       }
+    case 'create_sandbox_api_key':
+      return {
+        type: 'object' as const,
+        required: ['confirmationToken', 'humanIntentMessage'],
+        properties: {
+          connectionId: { type: 'string' as const },
+          label: { type: 'string' as const },
+          confirmationToken: { type: 'string' as const },
+          humanIntentMessage: { type: 'string' as const }
+        }
+      }
+    case 'list_sandbox_api_keys':
+      return {
+        type: 'object' as const,
+        properties: { connectionId: { type: 'string' as const } }
+      }
+    case 'revoke_sandbox_api_key':
+      return {
+        type: 'object' as const,
+        required: ['keyId', 'confirmationToken', 'humanIntentMessage'],
+        properties: {
+          connectionId: { type: 'string' as const },
+          keyId: { type: 'string' as const },
+          allowLast: { type: 'boolean' as const },
+          confirmationToken: { type: 'string' as const },
+          humanIntentMessage: { type: 'string' as const }
+        }
+      }
+    case 'set_connection_webhook_url':
+      return {
+        type: 'object' as const,
+        required: ['confirmationToken', 'humanIntentMessage'],
+        properties: {
+          connectionId: { type: 'string' as const },
+          webhookUrl: { type: 'string' as const },
+          inheritDefault: { type: 'boolean' as const },
+          confirmationToken: { type: 'string' as const },
+          humanIntentMessage: { type: 'string' as const }
+        }
+      }
+    case 'rotate_connection_webhook_secret':
+      return {
+        type: 'object' as const,
+        required: ['confirmationToken', 'humanIntentMessage'],
+        properties: {
+          connectionId: { type: 'string' as const },
+          confirmationToken: { type: 'string' as const },
+          humanIntentMessage: { type: 'string' as const }
+        }
+      }
   }
 
   if (
     toolName.endsWith('_connection')
     || toolName.includes('connection_')
     || toolName.startsWith('get_connection')
+    || toolName.includes('sandbox_api_key')
+    || toolName.includes('webhook')
   ) {
     return {
       type: 'object' as const,

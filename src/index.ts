@@ -23,7 +23,7 @@ function extractPat(authHeader: string | undefined): string | null {
 function policyDecisionFromError(message: string): string {
   if (message.includes('read-only')) return 'deny_live_write'
   if (message.includes('disabled for this organization')) return 'deny_mcp_acl'
-  if (message.includes('humanIntentMessage') || message.includes('confirm_action')) return 'deny_remove_confirm'
+  if (message.includes('humanIntentMessage') || message.includes('confirm_action')) return 'deny_confirm_required'
   return 'error'
 }
 
