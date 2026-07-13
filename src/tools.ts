@@ -5,6 +5,7 @@ import {
   normalizeMcpAcl
 } from './connectionPolicyGate.js'
 import {
+  type ConfirmationAction,
   checkPromotionApproveLimit,
   checkRateLimit,
   consumeConfirmationToken,
@@ -59,6 +60,29 @@ async function assertPromoteToLiveAllowed(pat: string): Promise<void> {
   assertCanPromoteToLive(status.canPromoteToLive)
 }
 
+const CREDENTIAL_CONFIRM_ACTIONS = new Set<ConfirmationAction>([
+  'create_sandbox_api_key',
+  'rotate_connection_webhook_secret',
+  'revoke_sandbox_api_key',
+  'set_connection_webhook_url'
+])
+
+function revokeConfirmationTarget(connectionId: string, keyId: string): string {
+  return `${connectionId}:${keyId}`
+}
+
+function consumeCredentialConfirmation(
+  args: Record<string, unknown>,
+  action: ConfirmationAction,
+  targetId: string
+): void {
+  const intent = String(args.humanIntentMessage ?? '')
+  if (!intent.trim()) {
+    throw new Error(`humanIntentMessage required for ${action}`)
+  }
+  consumeConfirmationToken(String(args.confirmationToken ?? ''), action, targetId)
+}
+
 async function dashboardFetch<T>(pat: string, path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${config.dashboardUrl}${path}`, {
     ...init,
@@ -88,7 +112,7 @@ export const toolDefinitions = [
   { name: 'create_config_version', description: 'Snapshot current sandbox config as a new version' },
   { name: 'create_promotion', description: 'Pro plan: open a promotion (PR) to sync sandbox version to Live' },
   { name: 'get_promotion', description: 'Pro plan: promotion detail and diff summary' },
-  { name: 'confirm_action', description: 'Issue a confirmation token before approve_promotion, remove_connection, or set_connection_webhook_url' },
+  { name: 'confirm_action', description: 'Issue a confirmation token before credential writes, approve_promotion, or remove_connection' },
   { name: 'approve_promotion', description: 'Pro plan: approve & sync to Live (requires confirm_action token)' },
   { name: 'reject_promotion', description: 'Pro plan: reject an open promotion' },
   { name: 'get_live_deployment', description: 'Read-only: what version is deployed on Live' },
@@ -120,9 +144,13 @@ export const toolDefinitions = [
   { name: 'list_ehr_base_models', description: 'List Epic/Cerner/Athena base EHR model packs' },
   { name: 'reset_synthetic_ehr_data', description: 'Re-seed VM synthetic EHR store from model pack' },
   { name: 'get_connection_developer_doc', description: 'Rendered markdown integration reference for active connection' },
-  { name: 'get_connection_credentials', description: 'Read sandbox credentials metadata (webhook URL, secret configured, Docker URL hints). Pass localAppUrl or port for demo-app suggestions.' },
-  { name: 'set_connection_webhook_url', description: 'Set per-connection webhook URL override for local demo receiver (requires confirm_action token)' },
   { name: 'propose_custom_ehr_model', description: 'Ingest doc text/URL and generate a BYOM draft model pack (apply via dashboard review gate)' },
+  { name: 'get_connection_credentials', description: 'Read sandbox credentials metadata (webhook URL, secret configured, Docker URL hints). Pass localAppUrl or port for demo-app suggestions.' },
+  { name: 'create_sandbox_api_key', description: 'Mint an additional connection-scoped hb_test_* key (requires confirm_action token; plaintext once)' },
+  { name: 'list_sandbox_api_keys', description: 'List active sandbox API key metadata for a connection (no plaintext)' },
+  { name: 'revoke_sandbox_api_key', description: 'Revoke one sandbox API key by id (requires confirm_action token; blocked if last unless allowLast)' },
+  { name: 'set_connection_webhook_url', description: 'Set per-connection webhook URL override for local demo receiver (requires confirm_action token)' },
+  { name: 'rotate_connection_webhook_secret', description: 'Rotate connection hbsec_* webhook secret (requires confirm_action token; plaintext once)' },
   { name: 'get_sdk_reference', description: 'Official @hebrah/sdk (Node) reference — install, API surface, MCP-to-SDK mapping. Do not web-search npm.' }
 ]
 
@@ -274,6 +302,35 @@ export async function callTool(
     }
     case 'confirm_action': {
       const action = String(args.action ?? (args.promotionId ? 'approve_promotion' : args.connectionId ? 'remove_connection' : ''))
+
+      if (CREDENTIAL_CONFIRM_ACTIONS.has(action as ConfirmationAction)) {
+        const credentialAction = action as ConfirmationAction
+        const connectionId = String(args.connectionId ?? session.activeConnectionId ?? '')
+        if (!connectionId) {
+          throw new Error(`connectionId required for confirm_action(${credentialAction})`)
+        }
+
+        let targetId = connectionId
+        let keyId: string | undefined
+        if (credentialAction === 'revoke_sandbox_api_key') {
+          keyId = String(args.keyId ?? args.key_id ?? '')
+          if (!keyId) {
+            throw new Error('keyId required for confirm_action(revoke_sandbox_api_key)')
+          }
+          targetId = revokeConfirmationTarget(connectionId, keyId)
+        }
+
+        const token = issueConfirmationToken(credentialAction, targetId)
+        return {
+          confirmationToken: token,
+          expiresInSeconds: 300,
+          action: credentialAction,
+          connectionId,
+          ...(keyId ? { keyId } : {}),
+          message: `Pass confirmationToken and humanIntentMessage to ${credentialAction}.`
+        }
+      }
+
       if (action === 'remove_connection') {
         assertMcpConnectionActionAllowed(auth.mcpAcl, 'removal')
         const connectionId = String(args.connectionId ?? session.activeConnectionId ?? '')
@@ -290,25 +347,12 @@ export async function callTool(
         }
       }
 
-      if (action === 'set_connection_webhook_url') {
-        const connectionId = String(args.connectionId ?? session.activeConnectionId ?? '')
-        if (!connectionId) {
-          throw new Error('connectionId required for confirm_action(set_connection_webhook_url)')
-        }
-        const token = issueConfirmationToken('set_connection_webhook_url', connectionId)
-        return {
-          confirmationToken: token,
-          expiresInSeconds: 300,
-          action: 'set_connection_webhook_url',
-          connectionId,
-          message: 'Pass confirmationToken and humanIntentMessage to set_connection_webhook_url with webhookUrl or localAppUrl/port.'
-        }
-      }
-
       await assertPromoteToLiveAllowed(auth.pat)
       const promotionId = String(args.promotionId ?? '')
       if (!promotionId) {
-        throw new Error('promotionId required for confirm_action(approve_promotion), or pass action=remove_connection or action=set_connection_webhook_url with connectionId')
+        throw new Error(
+          'promotionId required for confirm_action(approve_promotion), or pass action with connectionId for credential writes or remove_connection'
+        )
       }
       const token = issueConfirmationToken('approve_promotion', promotionId)
       return {
@@ -655,29 +699,27 @@ export async function callTool(
         throw new Error('connectionId required for set_connection_webhook_url')
       }
 
-      const token = String(args.confirmationToken ?? '')
-      const intent = String(args.humanIntentMessage ?? '')
-      if (!intent.trim()) {
-        throw new Error('humanIntentMessage required to set connection webhook URL')
-      }
-      consumeConfirmationToken(token, 'set_connection_webhook_url', connectionId)
+      consumeCredentialConfirmation(args, 'set_connection_webhook_url', connectionId)
 
-      const webhookUrl = resolveWebhookUrlFromSetArgs(args)
+      const body: Record<string, unknown> = {}
+      if (args.inheritDefault === true || args.inherit_default === true) {
+        body.inheritDefault = true
+      } else {
+        body.inheritDefault = false
+        body.webhookUrl = resolveWebhookUrlFromSetArgs(args)
+      }
 
       const result = await dashboardFetch<{
         effective?: { webhookUrl?: string | null }
       }>(auth.pat, `/api/connections/${encodeURIComponent(connectionId)}/webhook`, {
         method: 'POST',
-        body: JSON.stringify({
-          inheritDefault: false,
-          webhookUrl
-        })
+        body: JSON.stringify(body)
       })
 
       return {
         connectionId,
-        webhookUrl,
-        effectiveWebhookUrl: result.effective?.webhookUrl ?? webhookUrl,
+        webhookUrl: body.webhookUrl,
+        effectiveWebhookUrl: result.effective?.webhookUrl ?? body.webhookUrl,
         note: 'Connection webhook override saved. Use trigger_test_webhook to verify delivery to your local receiver.'
       }
     }
@@ -710,6 +752,79 @@ export async function callTool(
       return {
         ...generated,
         note: 'Draft only. Apply via dashboard Developer Docs BYOM panel with confirm token.'
+      }
+    }
+    case 'create_sandbox_api_key': {
+      const id = String(args.connectionId ?? args.connection_id ?? session.activeConnectionId ?? '')
+      if (!id) throw new Error('connectionId required for create_sandbox_api_key')
+      consumeCredentialConfirmation(args, 'create_sandbox_api_key', id)
+      const body: Record<string, unknown> = {}
+      if (args.label !== undefined) body.label = args.label
+      const result = await dashboardFetch<{
+        sandboxApiKey: string
+        key: { id: string, keyPrefix: string, environment: string, createdAt: string, label: string | null }
+        note?: string
+      }>(auth.pat, `/api/connections/${encodeURIComponent(id)}/credentials/keys`, {
+        method: 'POST',
+        body: JSON.stringify(body)
+      })
+      return {
+        ...result,
+        connectionId: id,
+        note: result.note
+          ?? 'Plaintext is shown once — write HEBRAH_SANDBOX_API_KEY to your local demo .env immediately.'
+      }
+    }
+    case 'list_sandbox_api_keys': {
+      const id = String(args.connectionId ?? args.connection_id ?? session.activeConnectionId ?? '')
+      if (!id) throw new Error('connectionId required for list_sandbox_api_keys')
+      const creds = await dashboardFetch<{
+        connectionId: string
+        activeKeys?: Array<{ id: string, keyPrefix: string, environment: string, createdAt: string, label?: string | null }>
+        activeKey: { id: string, keyPrefix: string, environment: string, createdAt: string, label?: string | null } | null
+        webhookUrl: string | null
+        webhookSecretConfigured: boolean
+        webhookSecretMasked: string | null
+      }>(auth.pat, `/api/connections/${encodeURIComponent(id)}/credentials`)
+      return {
+        connectionId: creds.connectionId,
+        activeKeys: creds.activeKeys ?? (creds.activeKey ? [creds.activeKey] : []),
+        webhookUrl: creds.webhookUrl,
+        webhookSecretConfigured: creds.webhookSecretConfigured,
+        webhookSecretMasked: creds.webhookSecretMasked,
+        note: 'Metadata only — plaintext keys are never re-fetched.'
+      }
+    }
+    case 'revoke_sandbox_api_key': {
+      const id = String(args.connectionId ?? args.connection_id ?? session.activeConnectionId ?? '')
+      const keyId = String(args.keyId ?? args.key_id ?? '')
+      if (!id) throw new Error('connectionId required for revoke_sandbox_api_key')
+      if (!keyId) throw new Error('keyId required for revoke_sandbox_api_key')
+      consumeCredentialConfirmation(args, 'revoke_sandbox_api_key', revokeConfirmationTarget(id, keyId))
+      const body: Record<string, unknown> = {}
+      if (args.allowLast === true || args.allow_last === true) body.allowLast = true
+      return dashboardFetch(
+        auth.pat,
+        `/api/connections/${encodeURIComponent(id)}/credentials/keys/${encodeURIComponent(keyId)}/revoke`,
+        { method: 'POST', body: JSON.stringify(body) }
+      )
+    }
+    case 'rotate_connection_webhook_secret': {
+      const id = String(args.connectionId ?? args.connection_id ?? session.activeConnectionId ?? '')
+      if (!id) throw new Error('connectionId required for rotate_connection_webhook_secret')
+      consumeCredentialConfirmation(args, 'rotate_connection_webhook_secret', id)
+      const result = await dashboardFetch<{
+        webhookSecret: string
+        note?: string
+        effective?: { webhookUrl: string | null }
+      }>(auth.pat, `/api/connections/${encodeURIComponent(id)}/webhook/rotate-secret`, {
+        method: 'POST'
+      })
+      return {
+        ...result,
+        connectionId: id,
+        note: result.note
+          ?? 'Plaintext is shown once — write HEBRAH_WEBHOOK_SECRET to your local demo .env immediately.'
       }
     }
     default:

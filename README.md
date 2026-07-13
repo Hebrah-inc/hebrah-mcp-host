@@ -42,23 +42,43 @@ The dev server loads `hebrah-mcp-host/.env` automatically at startup.
 
 `HEBRAH_SANDBOX_API_KEY` is **org-wide** sandbox API access — not scoped by PAT. Never share one key across tenants on a shared MCP host. Prefer one host per org until per-PAT sandbox key injection ships. See [documentation/hosted-mcp.md](../documentation/hosted-mcp.md#blast-radius-sec-009).
 
-## All 42 tools
+## All 51 tools
 
-Canonical numbered list: [documentation/hosted-mcp.md](../documentation/hosted-mcp.md#all-42-tools).
+Canonical numbered list: [documentation/hosted-mcp.md](../documentation/hosted-mcp.md#all-51-tools).
 
 | # | Tool | Purpose |
 |---|------|---------|
 | 1–21 | *(baseline + Phases 1–2)* | Connection mapping, promotions, domains, scenarios, HL7, sidecar |
-| 22–29 | *(Phase 3)* | Webhook deliveries, replay, reliability profile/scenarios |
-| 30 | `register_smart_client` | Register SMART redirect URIs |
-| 31 | `start_smart_launch` | SMART launch context for patient |
-| 32 | `run_mpi_match` | MPI match API |
-| 33 | `run_mpi_scenario` | `mpi_duplicate_resolution` |
-| 34 | `get_practitioner_credentialing` | Practitioner fixtures |
-| 35 | `run_credentialing_scenario` | `credentialing_verify_practitioner` |
-| 36 | `run_aggregator_query` | Aggregator bundle query |
-| 37 | `run_aggregator_scenario` | Aggregator domain scenarios |
-| 38 | `get_sdk_reference` | Official `@hebrah/sdk` (Node) reference — install, API, MCP-to-SDK mapping |
+| 22–33 | *(Phase 3 + reliability)* | Webhook deliveries, replay, reliability profile/scenarios |
+| 34–35 | SMART | `register_smart_client`, `start_smart_launch` (PAT `connections:write`) |
+| 36–41 | Interop domains | MPI, credentialing, aggregator |
+| 42–46 | Synthetic EHR / BYOM | Profile, base models, reset, developer doc, propose custom model |
+| 47–51 | Credentials | Mint/list/revoke `hb_test_*`; set webhook URL; rotate `hbsec_*` |
+| — | `get_connection_credentials` | Read credentials metadata + Docker URL hints for local demos |
+| — | `get_sdk_reference` | Official `@hebrah/sdk` (Node) reference — install, API, MCP-to-SDK mapping |
+
+**Local demos:** after `create_connection`, each credential write requires `confirm_action` first, then the write tool with `confirmationToken` + `humanIntentMessage`:
+
+```
+confirm_action(action=create_sandbox_api_key, connectionId) → create_sandbox_api_key(...)
+confirm_action(action=set_connection_webhook_url, connectionId) → set_connection_webhook_url(...)
+confirm_action(action=rotate_connection_webhook_secret, connectionId) → rotate_connection_webhook_secret(...)
+```
+
+Write plaintext once into the demo `.env`. Multiple active keys per connection are supported; plaintext is never re-fetched.
+
+## Credential write guardrails (`confirm_action` → credential tools)
+
+Credential writes that return or affect secrets require the same two-step confirmation as `remove_connection`:
+
+| Write tool | `confirm_action` action | Notes |
+|------------|-------------------------|-------|
+| `create_sandbox_api_key` | `create_sandbox_api_key` | Returns plaintext `hb_test_*` once |
+| `set_connection_webhook_url` | `set_connection_webhook_url` | Redirects webhook delivery; supports `localAppUrl` / `port` + `deliveryTarget` for Docker demos |
+| `rotate_connection_webhook_secret` | `rotate_connection_webhook_secret` | Returns plaintext `hbsec_*` once |
+| `revoke_sandbox_api_key` | `revoke_sandbox_api_key` | Requires `keyId` on both steps |
+
+`list_sandbox_api_keys` and `get_connection_credentials` are metadata-only (no gate). Tokens expire after ~5 minutes and are single-use.
 
 Implementation: [src/tools.ts](./src/tools.ts).
 

@@ -11,6 +11,9 @@ const CONFIRM_TTL_MS = 5 * 60_000
 export type ConfirmationAction =
   | 'approve_promotion'
   | 'remove_connection'
+  | 'create_sandbox_api_key'
+  | 'rotate_connection_webhook_secret'
+  | 'revoke_sandbox_api_key'
   | 'set_connection_webhook_url'
 
 type PendingConfirmation = {
