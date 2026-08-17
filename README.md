@@ -1,126 +1,92 @@
 # hebrah-mcp-host
 
-Hosted hebrah MCP server (Streamable HTTP). Point Cursor, Claude Code, or other MCP clients at `/mcp` with a universal `hb_pat_*` token.
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+[![Node 22+](https://img.shields.io/badge/node-%3E%3D22-blueviolet)](./package.json)
 
-## Local dev
+Open-source **[Model Context Protocol](https://modelcontextprotocol.io/)** server for the [Hebrah](https://hebrah.com) platform. Bridges MCP clients (Cursor, Claude Code, etc.) to a Hebrah dashboard + control plane over Streamable HTTP, using a per-user Personal Access Token (`hb_pat_*`).
+
+- **Source:** https://github.com/Hebrah-inc/hebrah-mcp-host
+- **License:** [MIT](./LICENSE)
+- **Security:** [SECURITY.md](./SECURITY.md)
+- **Contributing:** [CONTRIBUTING.md](./CONTRIBUTING.md)
+
+> The MCP server is **one piece of the Hebrah platform.** You will also need a running [hebrah-app](https://github.com/Hebrah-inc/hebrah-app) dashboard (port 3000) and [hebrah-api](https://github.com/Hebrah-inc/hebrah-api) control plane (port 8000). For application code, prefer the official SDKs: [`@hebrah/sdk`](https://www.npmjs.com/package/@hebrah/sdk) (Node) and [`hebrah`](https://pypi.org/project/hebrah/) (Python).
+
+---
+
+## What it does
+
+`hebrah-mcp-host` exposes ~50 tools that let an agent:
+
+| Category | Examples |
+|---|---|
+| **Connection lifecycle** | `list_connections`, `create_connection`, `pause_connection`, `remove_connection` |
+| **Sandbox exploration** | `get_sandbox_catalog`, `list_sandbox_domains`, `run_sandbox_scenario` |
+| **HL7 / sidecar** | `inject_hl7`, `run_hl7_flight_check`, `sidecar_writeback` |
+| **Webhook reliability** | `list_webhook_deliveries`, `replay_webhook_delivery`, `run_webhook_reliability_scenario` |
+| **SMART on FHIR** | `register_smart_client`, `start_smart_launch` |
+| **Interop** | `run_mpi_match`, `run_mpi_scenario`, `get_practitioner_credentialing`, `run_aggregator_query` |
+| **Synthetic EHR / BYOM** | `get_synthetic_ehr_profile`, `list_ehr_base_models`, `reset_synthetic_ehr_data`, `propose_custom_ehr_model` |
+| **Research Packs** | `list_research_packs`, `get_research_pack`, `apply_research_pack`, `compare_research_pack` |
+| **PTB-XL ECG** | `list_ptbxl_ecg_records`, `get_ptbxl_ecg_record`, `attach_ptbxl_ecg_exemplar` |
+| **Credentials (gated)** | `create_sandbox_api_key`, `revoke_sandbox_api_key`, `set_connection_webhook_url`, `rotate_connection_webhook_secret` |
+| **SDK reference** | `get_sdk_reference` (embedded `@hebrah/sdk` README + MCP-to-SDK mapping) |
+
+The full numbered list and tool descriptions are returned by `tools/list` once the server is connected.
+
+---
+
+## Install
 
 ```bash
+git clone https://github.com/Hebrah-inc/hebrah-mcp-host.git
 cd hebrah-mcp-host
-cp .env.example .env
 pnpm install
+cp .env.example .env
+# Fill HEBRAH_SANDBOX_API_KEY from hebrah onboarding Step 2
+# Generate MCP_INTERNAL_SECRET: openssl rand -hex 32 (must match hebrah-app)
 pnpm dev
 ```
 
-Requires hebrah-app on **http://localhost:3000** with `MCP_INTERNAL_SECRET` matching this service.
-
 Health check: `curl -s http://localhost:3021/health | jq .`
 
-## Environment
+### Production build
 
-| Variable | Default (local) | Purpose |
-|----------|-----------------|---------|
+```bash
+pnpm build
+node dist/index.js
+```
+
+Or with Docker:
+
+```bash
+docker build -t hebrah-mcp-host .
+docker run --rm -p 3021:3021 --env-file .env hebrah-mcp-host
+```
+
+---
+
+## Configuration
+
+| Variable | Default | Purpose |
+|---|---|---|
 | `PORT` | `3021` | HTTP listen port |
 | `HEBRAH_DASHBOARD_URL` | `http://localhost:3000` | PAT validation + dashboard API proxy |
 | `HEBRAH_API_URL` | `http://localhost:8000` | Control plane for catalog + webhook trigger |
-| `HEBRAH_SANDBOX_API_KEY` | *(required for some tools)* | Org `hb_test_*` from onboarding — **not** the PAT |
-| `MCP_INTERNAL_SECRET` | (from `generate-local-secrets.sh`) | Must match hebrah-app |
+| `HEBRAH_SANDBOX_API_KEY` | *(required)* | Org `hb_test_*` from onboarding Step 2 — **not** the PAT |
+| `MCP_INTERNAL_SECRET` | *(required, ≥ 32 chars)* | Shared with hebrah-app for audit log + MCP ACL lookup |
+| `REDIS_URL` | *(optional)* | Optional Redis for shared rate-limit counters |
+| `ORCHESTRATOR_URL` | `http://localhost:8090` | HL7 flight checks |
+| `ORCHestratorSECRET` | *(empty)* | Orchestrator auth |
+| `INTEGRATION_AGENT_URL` | `http://localhost:3050` | BYOM agent |
 
-Copy `.env.example` and fill in `HEBRAH_SANDBOX_API_KEY` from hebrah onboarding **Step 2**. Run `bash ../scripts/generate-local-secrets.sh` and `bash ../scripts/merge-local-secrets.sh` for `MCP_INTERNAL_SECRET` (must match hebrah-app). Set `NUXT_PUBLIC_MCP_URL=http://localhost:3021` in hebrah-app `.env`.
+`MCP_INTERNAL_SECRET` must be at least 32 characters. The server refuses to start otherwise.
 
-The dev server loads `hebrah-mcp-host/.env` automatically at startup.
+---
 
-### Credential types
+## Connecting a client
 
-| Credential | Used for |
-|------------|----------|
-| `hb_pat_*` | MCP session auth — dashboard reads/writes via PAT-scoped API |
-| `hb_test_*` (`HEBRAH_SANDBOX_API_KEY`) | Direct hebrah-api calls from the MCP host |
-
-`HEBRAH_SANDBOX_API_KEY` is required for hebrah-api sandbox tools (`get_sandbox_catalog`, `trigger_test_webhook`, `list_sandbox_domains`, `run_sandbox_scenario`, etc.). Without it, those tools error; PAT-only tools still work.
-
-### Blast radius (multi-tenant hosted MCP)
-
-`HEBRAH_SANDBOX_API_KEY` is **org-wide** sandbox API access — not scoped by PAT. Never share one key across tenants on a shared MCP host. Prefer one host per org until per-PAT sandbox key injection ships. See [documentation/hosted-mcp.md](../documentation/hosted-mcp.md#blast-radius-sec-009).
-
-## All 51 tools
-
-Canonical numbered list: [documentation/hosted-mcp.md](../documentation/hosted-mcp.md#all-51-tools).
-
-| # | Tool | Purpose |
-|---|------|---------|
-| 1–21 | *(baseline + Phases 1–2)* | Connection mapping, promotions, domains, scenarios, HL7, sidecar |
-| 22–33 | *(Phase 3 + reliability)* | Webhook deliveries, replay, reliability profile/scenarios |
-| 34–35 | SMART | `register_smart_client`, `start_smart_launch` (PAT `connections:write`) |
-| 36–41 | Interop domains | MPI, credentialing, aggregator |
-| 42–46 | Synthetic EHR / BYOM | Profile, base models, reset, developer doc, propose custom model |
-| 47–51 | Credentials | Mint/list/revoke `hb_test_*`; set webhook URL; rotate `hbsec_*` |
-| — | `get_connection_credentials` | Read credentials metadata + Docker URL hints for local demos |
-| — | `get_sdk_reference` | Official `@hebrah/sdk` (Node) reference — install, API, MCP-to-SDK mapping |
-
-**Local demos:** after `create_connection`, each credential write requires `confirm_action` first, then the write tool with `confirmationToken` + `humanIntentMessage`:
-
-```
-confirm_action(action=create_sandbox_api_key, connectionId) → create_sandbox_api_key(...)
-confirm_action(action=set_connection_webhook_url, connectionId) → set_connection_webhook_url(...)
-confirm_action(action=rotate_connection_webhook_secret, connectionId) → rotate_connection_webhook_secret(...)
-```
-
-Write plaintext once into the demo `.env`. Multiple active keys per connection are supported; plaintext is never re-fetched.
-
-## Credential write guardrails (`confirm_action` → credential tools)
-
-Credential writes that return or affect secrets require the same two-step confirmation as `remove_connection`:
-
-| Write tool | `confirm_action` action | Notes |
-|------------|-------------------------|-------|
-| `create_sandbox_api_key` | `create_sandbox_api_key` | Returns plaintext `hb_test_*` once |
-| `set_connection_webhook_url` | `set_connection_webhook_url` | Redirects webhook delivery; supports `localAppUrl` / `port` + `deliveryTarget` for Docker demos |
-| `rotate_connection_webhook_secret` | `rotate_connection_webhook_secret` | Returns plaintext `hbsec_*` once |
-| `revoke_sandbox_api_key` | `revoke_sandbox_api_key` | Requires `keyId` on both steps |
-
-`list_sandbox_api_keys` and `get_connection_credentials` are metadata-only (no gate). Tokens expire after ~5 minutes and are single-use.
-
-Implementation: [src/tools.ts](./src/tools.ts).
-
-### SDK reference sync
-
-`pnpm predev` / `pnpm prebuild` runs [scripts/sync-sdk-reference.mjs](./scripts/sync-sdk-reference.mjs), which embeds [hebrah-sdk-node/README.md](../hebrah-sdk-node/README.md) into `src/generated/nodeSdkReference.ts`. Agents should call `get_sdk_reference` instead of web-searching npm.
-
-## Sandbox-only policy
-
-| Rule | Detail |
-|------|--------|
-| Writes | `update_connection_mapping`, `create_config_version` apply to **Sandbox** connections only |
-| Live | Read-only until an approved **Pro-plan** promotion deploys config |
-| Promotions | **Pro plan only** — `get_account_status.canPromoteToLive` must be true |
-| Context | Call `set_active_connection` before mapping; promotion tools require Pro |
-
-## Promotion guardrails (Pro plan — `confirm_action` → `approve_promotion`)
-
-Promotion MCP tools and dashboard **Promote to Live** require a **Pro plan**. The MCP host checks `canPromoteToLive` on `/api/org/status` before `create_promotion`, `get_promotion`, `confirm_action`, `approve_promotion`, or `reject_promotion`.
-
-Live sync requires a deliberate two-step confirmation. Skipping `confirm_action` or omitting `humanIntentMessage` causes `approve_promotion` to fail.
-
-**Required sequence:**
-
-```
-create_promotion → confirm_action → approve_promotion
-```
-
-| Step | Tool | Notes |
-|------|------|-------|
-| 1 | `create_config_version` | Snapshot current sandbox mappings |
-| 2 | `create_promotion` | Pass `toVersionId`, optional `title` / `description` |
-| 3 | `get_promotion` | Review diff before approving |
-| 4 | `confirm_action` | Issues `confirmationToken` (~5 min TTL) for `promotionId` |
-| 5 | `approve_promotion` | Requires `confirmationToken`, `promotionId`, `humanIntentMessage` |
-| — | `reject_promotion` | Close without deploying |
-
-Guardrails in [src/guardrails.ts](./src/guardrails.ts): rate limits per tool, max 10 promotion approves per org per day, confirmation tokens expire after 5 minutes.
-
-## Cursor config
-
-See hebrah-app **Settings → MCP** or `GET /api/mcp/cursor-config`:
+Point your MCP client at `/mcp` with a Bearer `hb_pat_*` token. In Cursor:
 
 ```json
 {
@@ -135,8 +101,121 @@ See hebrah-app **Settings → MCP** or `GET /api/mcp/cursor-config`:
 }
 ```
 
-## Related docs
+Or use `GET /api/mcp/cursor-config` on hebrah-app to mint a Cursor snippet for your org.
 
-- [documentation/hosted-mcp.md](../documentation/hosted-mcp.md) — full hosted MCP reference
-- [documentation/agent-quickstart.md](../documentation/agent-quickstart.md) — 15-minute local setup
-- [hebrah-examples/admit-monitor-demo/](../hebrah-examples/admit-monitor-demo/) — MCP + webhook census demo
+---
+
+## Credential types
+
+| Credential | Used for |
+|---|---|
+| `hb_pat_*` (per-user PAT) | MCP session auth — dashboard reads/writes via PAT-scoped API |
+| `hb_test_*` (`HEBRAH_SANDBOX_API_KEY`) | Direct hebrah-api calls from the MCP host (catalog, mock webhook trigger) |
+| `hbsec_*` | Per-connection webhook signing secret (held by hebrah-app) |
+
+`HEBRAH_SANDBOX_API_KEY` is **org-wide** — not scoped by PAT. For multi-tenant hosted deployments, run one MCP host per organization until per-PAT sandbox key injection ships.
+
+---
+
+## Credential write guardrails
+
+Mutating tools that return or affect secrets require a two-step `confirm_action` flow with a single-use token (5-minute TTL):
+
+| Tool | `confirm_action` action |
+|---|---|
+| `create_sandbox_api_key` | `create_sandbox_api_key` |
+| `set_connection_webhook_url` | `set_connection_webhook_url` |
+| `rotate_connection_webhook_secret` | `rotate_connection_webhook_secret` |
+| `revoke_sandbox_api_key` | `revoke_sandbox_api_key` (requires `keyId` on both steps) |
+| `approve_promotion` | `approve_promotion` |
+| `remove_connection` | `remove_connection` |
+
+The token is action- and target-scoped, expires after 5 minutes, and can only be consumed once. Plaintext keys are returned once on the write step.
+
+Implementation: [`src/guardrails.ts`](./src/guardrails.ts).
+
+---
+
+## Sandbox-only policy
+
+| Rule | Detail |
+|---|---|
+| Writes | `update_connection_mapping`, `create_config_version` apply to **Sandbox** connections only |
+| Live | Read-only until an approved promotion deploys the new sandbox version |
+| Promotions | Require Pro plan — `get_account_status.canPromoteToLive` must be `true` |
+| Context | Call `set_active_connection` before mapping; promotion tools require Pro |
+
+---
+
+## Promotion flow
+
+Live sync requires a deliberate two-step confirmation. Skipping `confirm_action` or omitting `humanIntentMessage` causes `approve_promotion` to fail.
+
+```
+create_config_version
+  → create_promotion
+  → get_promotion        (review diff)
+  → confirm_action       (issues confirmationToken, ~5 min TTL)
+  → approve_promotion    (requires confirmationToken + humanIntentMessage)
+```
+
+Rate-limited to 10 promotion approves per org per day (in-memory; shared via Redis if configured).
+
+---
+
+## Architecture
+
+```
+MCP client (Cursor / Claude Code / ...)
+        │  Authorization: Bearer hb_pat_*
+        ▼
+┌────────────────────────────────────┐
+│  hebrah-mcp-host  (this repo)      │  Streamable HTTP / SSE
+│                                    │  • PAT validation  → hebrah-app
+│  • tool dispatcher                 │  • audit log       → hebrah-app (internal)
+│  • confirmation tokens             │  • sandbox calls   → hebrah-api
+│  • rate limiting (in-memory + Redis)│
+│  • ACL gates (per-org)             │
+└────────────────────────────────────┘
+        │                  │              │
+        ▼                  ▼              ▼
+   hebrah-app        hebrah-api    Redis (optional)
+   (PAT / audit)     (sandbox)     (rate limits)
+```
+
+Threat model, deployment guidance, and credential handling: [`SECURITY.md`](./SECURITY.md).
+
+Key files: [`src/index.ts`](./src/index.ts) (Hono app), [`src/tools.ts`](./src/tools.ts) (tool dispatch), [`src/guardrails.ts`](./src/guardrails.ts) (tokens + rate limits), [`src/connectionPolicyGate.ts`](./src/connectionPolicyGate.ts) (ACL), [`src/promotionGate.ts`](./src/promotionGate.ts) (plan gate).
+
+---
+
+## Testing
+
+```bash
+pnpm test
+```
+
+Tests run with the Node test runner (`node --test`). They cover:
+
+- `connectionPolicyGate` — ACL defaults, partial overrides, tool filtering
+- `guardrails` — rate limits, confirmation token lifecycle
+- `credentialConfirmGate` — two-step `confirm_action` for credential writes
+- `credentialTools` — webhook URL builder edge cases
+- `promotionGate` — Pro-plan gate
+- `sdkReference` — embedded SDK reference shape
+- `sseKeepalive` — keepalive wrapper
+
+Tests are self-contained and do not require network access.
+
+---
+
+## License
+
+[MIT](./LICENSE) — Copyright (c) 2026 Hebrah, Inc.
+
+## Related
+
+- [`@hebrah/sdk`](https://github.com/Hebrah-inc/hebrah-sdk-node) — Node SDK (MIT)
+- [`hebrah`](https://github.com/Hebrah-inc/hebrah-sdk-python) — Python SDK (MIT)
+- [hebrah-app](https://github.com/Hebrah-inc/hebrah-app) — operator dashboard
+- [hebrah-api](https://github.com/Hebrah-inc/hebrah-api) — control plane + sandbox
