@@ -143,6 +143,15 @@ export const toolDefinitions = [
   { name: 'get_synthetic_ehr_profile', description: 'Vendor model + endpoints for active connection synthetic EHR' },
   { name: 'list_ehr_base_models', description: 'List Epic/Cerner/Athena base EHR model packs' },
   { name: 'reset_synthetic_ehr_data', description: 'Re-seed VM synthetic EHR store from model pack' },
+  { name: 'list_research_packs', description: 'List Research Packs (e.g. medicare_utilization_v1 CMS claims calibration, ptbxl_ecg_v1 ECG cohort)' },
+  { name: 'get_research_pack', description: 'Get Research Pack metadata + CMS benchmark snapshot or PTB-XL attribution' },
+  { name: 'apply_research_pack', description: 'Apply a Research Pack to the active sandbox connection and remount seed (Medicare only; not PTB-XL)' },
+  { name: 'get_research_pack_kpis', description: 'Sandbox claim KPIs for a Research Pack (DRG mix, denial rate, Medicare share)' },
+  { name: 'compare_research_pack', description: 'Compare sandbox KPIs to vendored CMS open-data benchmark for a Research Pack' },
+  { name: 'list_ptbxl_ecg_records', description: 'List PTB-XL open-data ECG records (superclass filter: NORM/MI/STTC/CD/HYP)' },
+  { name: 'get_ptbxl_ecg_record', description: 'Get PTB-XL ECG metadata + suggested conditions (no full waveform samples)' },
+  { name: 'get_ptbxl_ecg_waveform_meta', description: 'PTB-XL waveform metadata + truncated lead preview (avoid huge MCP payloads)' },
+  { name: 'attach_ptbxl_ecg_exemplar', description: 'Attach a PTB-XL ECG exemplar to a sandbox cardiology patient (research label only)' },
   { name: 'get_connection_developer_doc', description: 'Rendered markdown integration reference for active connection' },
   { name: 'propose_custom_ehr_model', description: 'Ingest doc text/URL and generate a BYOM draft model pack (apply via dashboard review gate)' },
   { name: 'get_connection_credentials', description: 'Read sandbox credentials metadata (webhook URL, secret configured, Docker URL hints). Pass localAppUrl or port for demo-app suggestions.' },
@@ -656,6 +665,97 @@ export async function callTool(
       const connectionId = args.connection_id ?? args.connectionId ?? session.activeConnectionId
       const q = connectionId ? `?connection_id=${encodeURIComponent(String(connectionId))}` : ''
       return ultraFetch(`/v1/sandbox/synthetic-ehr/reset${q}`, { method: 'POST' })
+    }
+    case 'list_research_packs':
+      return ultraFetch('/v1/sandbox/research-packs')
+    case 'get_research_pack': {
+      const packId = String(args.pack_id ?? args.packId ?? 'medicare_utilization_v1')
+      return ultraFetch(`/v1/sandbox/research-packs/${encodeURIComponent(packId)}`)
+    }
+    case 'apply_research_pack': {
+      const packId = String(args.pack_id ?? args.packId ?? 'medicare_utilization_v1')
+      const connectionId = args.connection_id ?? args.connectionId ?? session.activeConnectionId
+      const q = connectionId ? `?connection_id=${encodeURIComponent(String(connectionId))}` : ''
+      return ultraFetch(`/v1/sandbox/research-packs/${encodeURIComponent(packId)}/apply${q}`, {
+        method: 'POST'
+      })
+    }
+    case 'get_research_pack_kpis': {
+      const packId = String(args.pack_id ?? args.packId ?? 'medicare_utilization_v1')
+      const connectionId = args.connection_id ?? args.connectionId ?? session.activeConnectionId
+      const q = connectionId ? `?connection_id=${encodeURIComponent(String(connectionId))}` : ''
+      return ultraFetch(`/v1/sandbox/research-packs/${encodeURIComponent(packId)}/kpis${q}`)
+    }
+    case 'compare_research_pack': {
+      const packId = String(args.pack_id ?? args.packId ?? 'medicare_utilization_v1')
+      const connectionId = args.connection_id ?? args.connectionId ?? session.activeConnectionId
+      const q = connectionId ? `?connection_id=${encodeURIComponent(String(connectionId))}` : ''
+      return ultraFetch(`/v1/sandbox/research-packs/${encodeURIComponent(packId)}/compare${q}`)
+    }
+    case 'list_ptbxl_ecg_records': {
+      const params = new URLSearchParams()
+      const superclass = args.superclass ?? args.superClass
+      if (superclass) params.set('superclass', String(superclass))
+      if (args.sex != null) params.set('sex', String(args.sex))
+      if (args.fold != null) params.set('fold', String(args.fold))
+      if (args.limit != null) params.set('limit', String(args.limit))
+      if (args.offset != null) params.set('offset', String(args.offset))
+      const qs = params.toString()
+      return ultraFetch(`/v1/sandbox/research-packs/ptbxl_ecg_v1/records${qs ? `?${qs}` : ''}`)
+    }
+    case 'get_ptbxl_ecg_record': {
+      const ecgId = args.ecg_id ?? args.ecgId
+      if (ecgId == null) throw new Error('ecg_id required for get_ptbxl_ecg_record')
+      return ultraFetch(`/v1/sandbox/research-packs/ptbxl_ecg_v1/records/${encodeURIComponent(String(ecgId))}`)
+    }
+    case 'get_ptbxl_ecg_waveform_meta': {
+      const ecgId = args.ecg_id ?? args.ecgId
+      if (ecgId == null) throw new Error('ecg_id required for get_ptbxl_ecg_waveform_meta')
+      const wave = await ultraFetch<{
+        ecg_id?: number
+        fs?: number
+        duration_s?: number
+        lead_order?: string[]
+        leads?: Record<string, number[]>
+        disclaimer?: string
+        attribution?: string
+      }>(`/v1/sandbox/research-packs/ptbxl_ecg_v1/records/${encodeURIComponent(String(ecgId))}/waveform`)
+      const preview: Record<string, number[]> = {}
+      for (const [lead, samples] of Object.entries(wave.leads || {})) {
+        preview[lead] = Array.isArray(samples) ? samples.slice(0, 8) : []
+      }
+      return {
+        pack_id: 'ptbxl_ecg_v1',
+        ecg_id: wave.ecg_id,
+        fs: wave.fs,
+        duration_s: wave.duration_s,
+        lead_order: wave.lead_order,
+        lead_sample_counts: Object.fromEntries(
+          Object.entries(wave.leads || {}).map(([k, v]) => [k, Array.isArray(v) ? v.length : 0])
+        ),
+        lead_preview_first_8: preview,
+        waveform_path: `/v1/sandbox/research-packs/ptbxl_ecg_v1/records/${encodeURIComponent(String(ecgId))}/waveform`,
+        disclaimer: wave.disclaimer,
+        attribution: wave.attribution,
+        note: 'Full samples omitted for MCP payload size. Use waveform_path via API/UI viewer.'
+      }
+    }
+    case 'attach_ptbxl_ecg_exemplar': {
+      const connectionId = args.connection_id ?? args.connectionId ?? session.activeConnectionId
+      const patientId = args.patient_id ?? args.patientId
+      const ecgId = args.ecg_id ?? args.ecgId
+      if (!patientId || ecgId == null) {
+        throw new Error('patient_id and ecg_id required for attach_ptbxl_ecg_exemplar')
+      }
+      const q = connectionId ? `?connection_id=${encodeURIComponent(String(connectionId))}` : ''
+      return ultraFetch(`/v1/sandbox/research-packs/ptbxl_ecg_v1/attach${q}`, {
+        method: 'POST',
+        body: JSON.stringify({
+          patient_id: String(patientId),
+          ecg_id: ecgId,
+          connection_id: connectionId ? String(connectionId) : undefined
+        })
+      })
     }
     case 'get_connection_developer_doc': {
       const id = String(args.connectionId ?? args.connection_id ?? session.activeConnectionId ?? '')

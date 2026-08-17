@@ -10,6 +10,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js'
 import { config } from './config.js'
 import { logMcpAudit } from './audit.js'
+import { wrapSseResponseWithKeepalive } from './sseKeepalive.js'
 import { filterToolsForAcl } from './connectionPolicyGate.js'
 import { listToolInputSchema } from './toolSchemas.js'
 import { callTool, toolDefinitions, validatePat, type McpAuth } from './tools.js'
@@ -213,6 +214,13 @@ app.all('/mcp', async (c) => {
 
   const handleOptions = c.req.method === 'POST' ? { parsedBody } : undefined
 
+  async function finalizeMcpResponse(response: Response): Promise<Response> {
+    if (c.req.method === 'GET') {
+      return wrapSseResponseWithKeepalive(response)
+    }
+    return response
+  }
+
   if (requestSessionId) {
     const existing = mcpSessions.get(requestSessionId)
     if (existing) {
@@ -223,7 +231,7 @@ app.all('/mcp', async (c) => {
       if (c.req.method === 'DELETE') {
         mcpSessions.delete(requestSessionId)
       }
-      return response
+      return finalizeMcpResponse(response)
     }
     console.warn(`[mcp] stale session ${requestSessionId} — restart MCP in Cursor after hebrah-mcp-host restarts`)
     return sessionNotFoundResponse()
@@ -234,7 +242,7 @@ app.all('/mcp', async (c) => {
   }
 
   const session = await createMcpSession(auth)
-  return session.transport.handleRequest(c.req.raw, handleOptions)
+  return finalizeMcpResponse(await session.transport.handleRequest(c.req.raw, handleOptions))
 })
 
 serve({ fetch: app.fetch, port: config.port }, () => {
