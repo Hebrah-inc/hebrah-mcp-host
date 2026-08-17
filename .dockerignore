@@ -1,0 +1,25 @@
+# Source control / metadata
+.git
+.gitignore
+.github
+
+# Local environment — never bake secrets into image
+.env
+.env.*
+!.env.example
+
+# Tests / dev artefacts
+test-results/
+playwright-report/
+coverage/
+*.log
+
+# OS / editor cruft
+**/.DS_Store
+**/._*
+.idea/
+.vscode/
+
+# Don't ship local build outputs (Dockerfile rebuilds anyway)
+dist
+node_modules

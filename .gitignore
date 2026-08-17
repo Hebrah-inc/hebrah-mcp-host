@@ -1,4 +1,30 @@
-node_modules
-dist
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Local environment — never commit
 .env
+.env.*
+!.env.example
+
+# Editor / OS
 .DS_Store
+.idea/
+.vscode/
+**/._*
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+
+# Coverage
+coverage/
+*.lcov
+
+# Test artifacts
+test-results/
+playwright-report/
