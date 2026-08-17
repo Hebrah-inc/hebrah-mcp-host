@@ -80,7 +80,7 @@ docker run --rm -p 3021:3021 --env-file .env hebrah-mcp-host
 | `MCP_INTERNAL_SECRET` | *(required, ≥ 32 chars)* | Shared with hebrah-app for audit log + MCP ACL lookup |
 | `REDIS_URL` | *(optional)* | Optional Redis for shared rate-limit counters |
 | `ORCHESTRATOR_URL` | `http://localhost:8090` | HL7 flight checks |
-| `ORCHestratorSECRET` | *(empty)* | Orchestrator auth |
+| `ORCHESTRATOR_SECRET` | *(empty)* | Orchestrator auth |
 | `INTEGRATION_AGENT_URL` | `http://localhost:3050` | BYOM agent |
 
 `MCP_INTERNAL_SECRET` must be at least 32 characters. The server refuses to start otherwise.
