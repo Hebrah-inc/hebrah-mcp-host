@@ -148,6 +148,37 @@ export function listToolInputSchema(toolName: string) {
           humanIntentMessage: { type: 'string' as const }
         }
       }
+    case 'list_ptbxl_ecg_records':
+      return {
+        type: 'object' as const,
+        properties: {
+          superclass: {
+            type: 'string' as const,
+            enum: ['NORM', 'MI', 'STTC', 'CD', 'HYP'] as const
+          },
+          sex: { type: 'string' as const },
+          fold: { type: 'number' as const },
+          limit: { type: 'number' as const },
+          offset: { type: 'number' as const }
+        }
+      }
+    case 'get_ptbxl_ecg_record':
+    case 'get_ptbxl_ecg_waveform_meta':
+      return {
+        type: 'object' as const,
+        required: ['ecg_id'],
+        properties: { ecg_id: { type: 'string' as const } }
+      }
+    case 'attach_ptbxl_ecg_exemplar':
+      return {
+        type: 'object' as const,
+        required: ['patient_id', 'ecg_id'],
+        properties: {
+          connectionId: { type: 'string' as const },
+          patient_id: { type: 'string' as const },
+          ecg_id: { type: 'string' as const }
+        }
+      }
   }
 
   if (
