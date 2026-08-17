@@ -1,7 +1,10 @@
 # hebrah-mcp-host
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+[![MCP](https://img.shields.io/badge/MCP-streamable--HTTP-blueviolet)](https://modelcontextprotocol.io/)
 [![Node 22+](https://img.shields.io/badge/node-%3E%3D22-blueviolet)](./package.json)
+[![GitHub stars](https://img.shields.io/github/stars/Hebrah-inc/hebrah-mcp-host.svg?style=social)](https://github.com/Hebrah-inc/hebrah-mcp-host)
+[![GitHub issues](https://img.shields.io/github/issues/Hebrah-inc/hebrah-mcp-host.svg)](https://github.com/Hebrah-inc/hebrah-mcp-host/issues)
 
 Open-source **[Model Context Protocol](https://modelcontextprotocol.io/)** server for the [Hebrah](https://hebrah.com) platform. Bridges MCP clients (Cursor, Claude Code, etc.) to a Hebrah dashboard + control plane over Streamable HTTP, using a per-user Personal Access Token (`hb_pat_*`).
 
