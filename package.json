@@ -13,12 +13,21 @@
     "hebrah",
     "healthcare",
     "fhir",
+    "fhir-client",
     "hl7",
-    "webhooks",
+    "hl7v2",
+    "ehr",
+    "emr",
     "sandbox",
-    "agents"
+    "webhooks",
+    "agents",
+    "agent-tools",
+    "claude",
+    "anthropic",
+    "cursor",
+    "ai-agents"
   ],
-  "homepage": "https://github.com/Hebrah-inc/hebrah-mcp-host#readme",
+  "homepage": "https://hebrah.com",
   "bugs": {
     "url": "https://github.com/Hebrah-inc/hebrah-mcp-host/issues"
   },
