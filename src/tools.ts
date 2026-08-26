@@ -99,6 +99,7 @@ async function dashboardFetch<T>(pat: string, path: string, init?: RequestInit):
 }
 
 export const toolDefinitions = [
+  { name: 'create_account', description: 'Create a no-PHI Sandbox trial (500 messages + 100 webhook deliveries) and invite a human billing owner; disabled unless ALLOW_HEADLESS_SIGNUP=true' },
   { name: 'set_active_connection', description: 'Set the sandbox connection context for subsequent tools' },
   { name: 'get_account_status', description: 'Org status and connections summary' },
   { name: 'list_connections', description: 'List dashboard connections' },
@@ -173,6 +174,50 @@ export async function callTool(
   const session = getSession(sessionId)
 
   switch (name) {
+    case 'create_account': {
+      if (!config.allowHeadlessSignup) {
+        throw new Error(
+          'Headless account creation is disabled on this MCP host. ' +
+          'Set ALLOW_HEADLESS_SIGNUP=true on hebrah-mcp-host, or have the human sign up at ' +
+          `${config.dashboardUrl}/signup.`
+        )
+      }
+      const orgName = String(args.orgName ?? '').trim()
+      if (!orgName) {
+        throw new Error('orgName is required for create_account')
+      }
+      const inviteEmail = String(args.inviteEmail ?? '').trim()
+      if (!inviteEmail || !inviteEmail.includes('@')) {
+        throw new Error('inviteEmail is required for create_account — a human team member must claim the org and own payment.')
+      }
+      const body: Record<string, unknown> = { orgName, inviteEmail }
+      if (args.agentName) body.agentName = String(args.agentName)
+      if (args.ehrVendor) body.ehrVendor = String(args.ehrVendor)
+
+      const result = await fetch(`${config.dashboardUrl}/api/signup/headless`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      })
+      if (!result.ok) {
+        const text = await result.text()
+        throw new Error(`Headless signup failed (${result.status}): ${text}`)
+      }
+      const data = await result.json() as {
+        orgId: string
+        pat: string
+        mcpEndpointUrl: string
+        trial: { credits: { messages: number, webhookDeliveries: number }, claimUrl: string, claimExpiresAt: string }
+        inviteEmail: string
+      }
+      return {
+        ...data,
+        note: `Trial Sandbox created with ${data.trial.credits.messages} messages and ${data.trial.credits.webhookDeliveries} webhook deliveries. ` +
+              `Share this claim URL with the human billing owner (${data.inviteEmail}): ${data.trial.claimUrl}. ` +
+              `Use the returned pat as the Bearer token for MCP and dashboard API calls. ` +
+              `Sandbox has synthetic data only — no PHI and no BAA.`
+      }
+    }
     case 'set_active_connection': {
       session.activeConnectionId = String(args.connectionId)
       const list = await dashboardFetch<{ connections: Array<{ id: string, environment: string, name: string }> }>(
