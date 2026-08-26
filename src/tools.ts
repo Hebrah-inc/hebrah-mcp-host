@@ -24,6 +24,7 @@ export type McpAuth = {
   orgId: string
   tokenId: string
   mcpAcl: McpAcl
+  bootstrap?: boolean
 }
 
 const sessions = new Map<string, { activeConnectionId?: string }>()
@@ -98,8 +99,11 @@ async function dashboardFetch<T>(pat: string, path: string, init?: RequestInit):
   return res.json() as Promise<T>
 }
 
+export const bootstrapToolDefinitions = [
+  { name: 'create_account', description: 'Create a no-PHI Sandbox trial (500 messages + 100 webhook deliveries) and invite a human billing owner; available only when ALLOW_HEADLESS_SIGNUP=true' }
+]
+
 export const toolDefinitions = [
-  { name: 'create_account', description: 'Create a no-PHI Sandbox trial (500 messages + 100 webhook deliveries) and invite a human billing owner; disabled unless ALLOW_HEADLESS_SIGNUP=true' },
   { name: 'set_active_connection', description: 'Set the sandbox connection context for subsequent tools' },
   { name: 'get_account_status', description: 'Org status and connections summary' },
   { name: 'list_connections', description: 'List dashboard connections' },
@@ -170,25 +174,19 @@ export async function callTool(
   name: string,
   args: Record<string, unknown>
 ): Promise<unknown> {
-  await checkRateLimit(auth.orgId, name)
+  if (!auth.bootstrap) await checkRateLimit(auth.orgId, name)
   const session = getSession(sessionId)
 
   switch (name) {
     case 'create_account': {
-      if (!config.allowHeadlessSignup) {
-        throw new Error(
-          'Headless account creation is disabled on this MCP host. ' +
-          'Set ALLOW_HEADLESS_SIGNUP=true on hebrah-mcp-host, or have the human sign up at ' +
-          `${config.dashboardUrl}/signup.`
-        )
+      if (!auth.bootstrap || !config.allowHeadlessSignup) {
+        throw new Error('Headless account creation is not currently available on this MCP host.')
       }
       const orgName = String(args.orgName ?? '').trim()
-      if (!orgName) {
-        throw new Error('orgName is required for create_account')
-      }
+      if (!orgName) throw new Error('orgName is required for create_account')
       const inviteEmail = String(args.inviteEmail ?? '').trim()
       if (!inviteEmail || !inviteEmail.includes('@')) {
-        throw new Error('inviteEmail is required for create_account — a human team member must claim the org and own payment.')
+        throw new Error('inviteEmail is required — a human team member must claim the org and own payment.')
       }
       const body: Record<string, unknown> = { orgName, inviteEmail }
       if (args.agentName) body.agentName = String(args.agentName)
@@ -197,11 +195,11 @@ export async function callTool(
       const result = await fetch(`${config.dashboardUrl}/api/signup/headless`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(30_000)
       })
       if (!result.ok) {
-        const text = await result.text()
-        throw new Error(`Headless signup failed (${result.status}): ${text}`)
+        throw new Error(`Headless signup failed (${result.status}): ${await result.text()}`)
       }
       const data = await result.json() as {
         orgId: string
@@ -213,9 +211,8 @@ export async function callTool(
       return {
         ...data,
         note: `Trial Sandbox created with ${data.trial.credits.messages} messages and ${data.trial.credits.webhookDeliveries} webhook deliveries. ` +
-              `Share this claim URL with the human billing owner (${data.inviteEmail}): ${data.trial.claimUrl}. ` +
-              `Use the returned pat as the Bearer token for MCP and dashboard API calls. ` +
-              `Sandbox has synthetic data only — no PHI and no BAA.`
+          `Share this claim URL with the human billing owner (${data.inviteEmail}): ${data.trial.claimUrl}. ` +
+          'Use the returned pat as the Bearer token for the new MCP session. Sandbox has synthetic data only — no PHI and no BAA.'
       }
     }
     case 'set_active_connection': {
