@@ -11,9 +11,9 @@ import {
 import { config } from './config.js'
 import { logMcpAudit } from './audit.js'
 import { wrapSseResponseWithKeepalive } from './sseKeepalive.js'
-import { filterToolsForAcl } from './connectionPolicyGate.js'
+import { filterToolsForAcl, normalizeMcpAcl } from './connectionPolicyGate.js'
 import { listToolInputSchema } from './toolSchemas.js'
-import { callTool, toolDefinitions, validatePat, type McpAuth } from './tools.js'
+import { callTool, bootstrapToolDefinitions, toolDefinitions, validatePat, type McpAuth } from './tools.js'
 
 function extractPat(authHeader: string | undefined): string | null {
   if (!authHeader?.startsWith('Bearer ')) return null
@@ -67,7 +67,7 @@ function createMcpServer(auth: McpAuth, sessionId: string) {
   )
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: filterToolsForAcl(toolDefinitions, auth.mcpAcl).map(t => ({
+    tools: (auth.bootstrap ? bootstrapToolDefinitions : filterToolsForAcl(toolDefinitions, auth.mcpAcl)).map(t => ({
       ...t,
       inputSchema: listToolInputSchema(t.name)
     }))
@@ -78,27 +78,31 @@ function createMcpServer(auth: McpAuth, sessionId: string) {
     const args = (request.params.arguments ?? {}) as Record<string, unknown>
     try {
       const result = await callTool(auth, sessionId, name, args)
-      await logMcpAudit({
-        orgId: auth.orgId,
-        tokenId: auth.tokenId,
-        sessionId,
-        toolName: name,
-        connectionId: typeof args.connectionId === 'string' ? args.connectionId : undefined,
-        policyDecision: 'allow',
-        outcome: 'ok'
-      })
+      if (!auth.bootstrap) {
+        await logMcpAudit({
+          orgId: auth.orgId,
+          tokenId: auth.tokenId,
+          sessionId,
+          toolName: name,
+          connectionId: typeof args.connectionId === 'string' ? args.connectionId : undefined,
+          policyDecision: 'allow',
+          outcome: 'ok'
+        })
+      }
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      await logMcpAudit({
-        orgId: auth.orgId,
-        tokenId: auth.tokenId,
-        sessionId,
-        toolName: name,
-        connectionId: typeof args.connectionId === 'string' ? args.connectionId : undefined,
-        policyDecision: policyDecisionFromError(message),
-        outcome: 'error'
-      })
+      if (!auth.bootstrap) {
+        await logMcpAudit({
+          orgId: auth.orgId,
+          tokenId: auth.tokenId,
+          sessionId,
+          toolName: name,
+          connectionId: typeof args.connectionId === 'string' ? args.connectionId : undefined,
+          policyDecision: policyDecisionFromError(message),
+          outcome: 'error'
+        })
+      }
       return { content: [{ type: 'text', text: message }], isError: true }
     }
   })
@@ -173,28 +177,43 @@ app.get('/health', c => c.json({ ok: true }))
 app.all('/mcp', async (c) => {
   const sessionHeader = c.req.header('mcp-session-id')
   const pat = extractPat(c.req.header('authorization'))
-  if (!pat) {
+  const existingSession = sessionHeader ? mcpSessions.get(sessionHeader) : undefined
+
+  let auth: McpAuth
+  if (pat) {
+    let validated
+    try {
+      validated = await validatePat(pat)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Dashboard unreachable'
+      return c.json({ error: message }, 503)
+    }
+    if (!validated) {
+      console.warn('[mcp] rejected: invalid or expired PAT')
+      return c.json({ error: 'Invalid or expired token' }, 401)
+    }
+    auth = {
+      pat,
+      orgId: validated.orgId,
+      tokenId: validated.tokenId,
+      mcpAcl: validated.mcpAcl
+    }
+  } else if (existingSession?.auth.bootstrap) {
+    // Bootstrap sessions are deliberately limited to create_account and do
+    // not need a PAT on follow-up MCP requests.
+    auth = existingSession.auth
+  } else if (config.allowHeadlessSignup && !sessionHeader) {
+    // A PAT cannot be required for the very tool that creates the first PAT.
+    auth = {
+      pat: '',
+      orgId: '',
+      tokenId: '',
+      mcpAcl: normalizeMcpAcl(),
+      bootstrap: true
+    }
+  } else {
     console.warn('[mcp] rejected: missing Bearer hb_pat_* token')
     return c.json({ error: 'Missing Bearer hb_pat_* token' }, 401)
-  }
-
-  let validated
-  try {
-    validated = await validatePat(pat)
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Dashboard unreachable'
-    return c.json({ error: message }, 503)
-  }
-  if (!validated) {
-    console.warn('[mcp] rejected: invalid or expired PAT')
-    return c.json({ error: 'Invalid or expired token' }, 401)
-  }
-
-  const auth: McpAuth = {
-    pat,
-    orgId: validated.orgId,
-    tokenId: validated.tokenId,
-    mcpAcl: validated.mcpAcl
   }
 
   const requestSessionId = c.req.header('mcp-session-id') ?? undefined

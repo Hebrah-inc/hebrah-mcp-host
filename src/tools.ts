@@ -24,6 +24,7 @@ export type McpAuth = {
   orgId: string
   tokenId: string
   mcpAcl: McpAcl
+  bootstrap?: boolean
 }
 
 const sessions = new Map<string, { activeConnectionId?: string }>()
@@ -98,6 +99,10 @@ async function dashboardFetch<T>(pat: string, path: string, init?: RequestInit):
   return res.json() as Promise<T>
 }
 
+export const bootstrapToolDefinitions = [
+  { name: 'create_account', description: 'Create a no-PHI Sandbox trial (500 messages + 100 webhook deliveries) and invite a human billing owner; available only when ALLOW_HEADLESS_SIGNUP=true' }
+]
+
 export const toolDefinitions = [
   { name: 'set_active_connection', description: 'Set the sandbox connection context for subsequent tools' },
   { name: 'get_account_status', description: 'Org status and connections summary' },
@@ -169,10 +174,47 @@ export async function callTool(
   name: string,
   args: Record<string, unknown>
 ): Promise<unknown> {
-  await checkRateLimit(auth.orgId, name)
+  if (!auth.bootstrap) await checkRateLimit(auth.orgId, name)
   const session = getSession(sessionId)
 
   switch (name) {
+    case 'create_account': {
+      if (!auth.bootstrap || !config.allowHeadlessSignup) {
+        throw new Error('Headless account creation is not currently available on this MCP host.')
+      }
+      const orgName = String(args.orgName ?? '').trim()
+      if (!orgName) throw new Error('orgName is required for create_account')
+      const inviteEmail = String(args.inviteEmail ?? '').trim()
+      if (!inviteEmail || !inviteEmail.includes('@')) {
+        throw new Error('inviteEmail is required — a human team member must claim the org and own payment.')
+      }
+      const body: Record<string, unknown> = { orgName, inviteEmail }
+      if (args.agentName) body.agentName = String(args.agentName)
+      if (args.ehrVendor) body.ehrVendor = String(args.ehrVendor)
+
+      const result = await fetch(`${config.dashboardUrl}/api/signup/headless`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(30_000)
+      })
+      if (!result.ok) {
+        throw new Error(`Headless signup failed (${result.status}): ${await result.text()}`)
+      }
+      const data = await result.json() as {
+        orgId: string
+        pat: string
+        mcpEndpointUrl: string
+        trial: { credits: { messages: number, webhookDeliveries: number }, claimUrl: string, claimExpiresAt: string }
+        inviteEmail: string
+      }
+      return {
+        ...data,
+        note: `Trial Sandbox created with ${data.trial.credits.messages} messages and ${data.trial.credits.webhookDeliveries} webhook deliveries. ` +
+          `Share this claim URL with the human billing owner (${data.inviteEmail}): ${data.trial.claimUrl}. ` +
+          'Use the returned pat as the Bearer token for the new MCP session. Sandbox has synthetic data only — no PHI and no BAA.'
+      }
+    }
     case 'set_active_connection': {
       session.activeConnectionId = String(args.connectionId)
       const list = await dashboardFetch<{ connections: Array<{ id: string, environment: string, name: string }> }>(

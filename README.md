@@ -23,6 +23,7 @@ Open-source **[Model Context Protocol](https://modelcontextprotocol.io/)** serve
 
 | Category | Examples |
 |---|---|
+| **Account onboarding** | `create_account` *(optional, disabled by default)* — create a Sandbox trial and invite a human billing owner |
 | **Connection lifecycle** | `list_connections`, `create_connection`, `pause_connection`, `remove_connection` |
 | **Sandbox exploration** | `get_sandbox_catalog`, `list_sandbox_domains`, `run_sandbox_scenario` |
 | **HL7 / sidecar** | `inject_hl7`, `run_hl7_flight_check`, `sidecar_writeback` |
@@ -78,6 +79,7 @@ docker run --rm -p 3021:3021 --env-file .env hebrah-mcp-host
 | `HEBRAH_API_URL` | `http://localhost:8000` | Control plane for catalog + webhook trigger |
 | `HEBRAH_SANDBOX_API_KEY` | *(required)* | Org `hb_test_*` from onboarding Step 2 — **not** the PAT |
 | `MCP_INTERNAL_SECRET` | *(required, ≥ 32 chars)* | Shared with hebrah-app for audit log + MCP ACL lookup |
+| `ALLOW_HEADLESS_SIGNUP` | `false` | Expose `create_account` to authenticated MCP clients; keep disabled on shared/public hosts unless abuse monitoring is configured |
 | `REDIS_URL` | *(optional)* | Optional Redis for shared rate-limit counters |
 | `ORCHESTRATOR_URL` | `http://localhost:8090` | HL7 flight checks |
 | `ORCHESTRATOR_SECRET` | *(empty)* | Orchestrator auth |

@@ -14,6 +14,17 @@ export function listToolInputSchema(toolName: string) {
           resourceTypes: { type: 'array' as const, items: { type: 'string' as const } }
         }
       }
+    case 'create_account':
+      return {
+        type: 'object' as const,
+        required: ['orgName', 'inviteEmail'],
+        properties: {
+          orgName: { type: 'string' as const, description: 'Organization name' },
+          inviteEmail: { type: 'string' as const, format: 'email', description: 'Human team member who will claim the org and own payment' },
+          agentName: { type: 'string' as const, description: 'Optional label for the agent creating the account' },
+          ehrVendor: { type: 'string' as const, enum: ['Epic', 'Cerner', 'Athena', 'Other'] as const }
+        }
+      }
     case 'set_active_connection':
       return {
         type: 'object' as const,

@@ -21,5 +21,6 @@ export const config = {
   orchestratorSecret: process.env.ORCHESTRATOR_SECRET || '',
   integrationAgentUrl: (process.env.INTEGRATION_AGENT_URL || 'http://localhost:3050').replace(/\/$/, ''),
   sandboxApiKey: process.env.HEBRAH_SANDBOX_API_KEY || '',
+  allowHeadlessSignup: process.env.ALLOW_HEADLESS_SIGNUP === 'true',
   mcpInternalSecret: requireSecret('MCP_INTERNAL_SECRET')
 }
