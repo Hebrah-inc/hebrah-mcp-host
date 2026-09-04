@@ -52,6 +52,7 @@ function bodyHasInitialize(body: unknown): boolean {
 
 const MCP_SERVER_INSTRUCTIONS = [
   'Hebrah hosted MCP: use tools for sandbox exploration, dashboard config, and promotions.',
+  'For private enterprise data, use discover_data_sources → confirm_action → connect_to_data_source → query_data_source; connections are scoped, read-only, TTL-bound, and auditable.',
   'For application integration code, use the official Node SDK @hebrah/sdk (npm install @hebrah/sdk).',
   'Call get_sdk_reference for full SDK docs, API surface, and MCP-to-SDK mapping — do not web-search npm.',
   'MCP uses hb_pat_* tokens; the SDK uses per-connection hb_test_* API keys from credential MCP tools.'

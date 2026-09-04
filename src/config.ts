@@ -22,5 +22,10 @@ export const config = {
   integrationAgentUrl: (process.env.INTEGRATION_AGENT_URL || 'http://localhost:3050').replace(/\/$/, ''),
   sandboxApiKey: process.env.HEBRAH_SANDBOX_API_KEY || '',
   allowHeadlessSignup: process.env.ALLOW_HEADLESS_SIGNUP === 'true',
+  // Hebrah Connect (secure private-data connectivity slice). When
+  // connectApiKey is set it is used for every org; otherwise each org gets its
+  // own demo connect account created on first use (in-memory cache).
+  connectUrl: (process.env.HEBRAH_CONNECT_URL || 'http://localhost:3040').replace(/\/$/, ''),
+  connectApiKey: process.env.HEBRAH_CONNECT_API_KEY || '',
   mcpInternalSecret: requireSecret('MCP_INTERNAL_SECRET')
 }

@@ -27,13 +27,52 @@ export type McpAuth = {
   bootstrap?: boolean
 }
 
-const sessions = new Map<string, { activeConnectionId?: string }>()
+const sessions = new Map<string, { activeConnectionId?: string, connectApiKey?: string, connectAccountId?: string, connectConnectionId?: string }>()
 
 export function getSession(sessionId: string) {
   if (!sessions.has(sessionId)) {
     sessions.set(sessionId, {})
   }
   return sessions.get(sessionId)!
+}
+
+async function connectFetch<T>(
+  auth: McpAuth,
+  session: { connectApiKey?: string, connectAccountId?: string },
+  path: string,
+  init?: RequestInit
+): Promise<T> {
+  let key = config.connectApiKey
+  if (!key) {
+    if (!session.connectApiKey) {
+      const response = await fetch(`${config.connectUrl}/v1/account`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: `mcp-agent:${auth.orgId}` }),
+        signal: AbortSignal.timeout(15_000)
+      })
+      if (!response.ok) {
+        throw new Error(`Hebrah Connect account creation failed (${response.status}): ${await response.text()}`)
+      }
+      const account = await response.json() as { account_id: string, api_key: string }
+      session.connectApiKey = account.api_key
+      session.connectAccountId = account.account_id
+    }
+    key = session.connectApiKey ?? ''
+  }
+  const response = await fetch(`${config.connectUrl}${path}`, {
+    ...init,
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${key}`,
+      ...(init?.headers ?? {})
+    },
+    signal: init?.signal ?? AbortSignal.timeout(30_000)
+  })
+  if (!response.ok) {
+    throw new Error(`Hebrah Connect ${path} failed (${response.status}): ${await response.text()}`)
+  }
+  return response.json() as Promise<T>
 }
 
 async function ultraFetch<T>(path: string, init?: RequestInit): Promise<T> {
@@ -65,9 +104,10 @@ const CREDENTIAL_CONFIRM_ACTIONS = new Set<ConfirmationAction>([
   'create_sandbox_api_key',
   'rotate_connection_webhook_secret',
   'revoke_sandbox_api_key',
-  'set_connection_webhook_url'
+  'set_connection_webhook_url',
+  'connect_to_data_source',
+  'revoke_data_source_connection'
 ])
-
 function revokeConfirmationTarget(connectionId: string, keyId: string): string {
   return `${connectionId}:${keyId}`
 }
@@ -104,6 +144,13 @@ export const bootstrapToolDefinitions = [
 ]
 
 export const toolDefinitions = [
+  { name: 'discover_data_sources', description: 'Discover registered Hebrah Connect private-data targets, required scopes, supported tiers, and relay health' },
+  { name: 'connect_to_data_source', description: 'Create a scoped, TTL-bound connection to a registered demo/private target; the agent never receives the source credential' },
+  { name: 'query_data_source', description: 'Run one read-only, scope-enforced query through a Hebrah Connect connection; returns rows, metering, and audit event id' },
+  { name: 'get_data_source_audit', description: 'Read the hash-chained audit events for a Hebrah Connect connection' },
+  { name: 'get_connect_usage', description: 'Read Hebrah Connect trial quota and usage counters for this MCP session' },
+  { name: 'revoke_data_source_connection', description: 'Revoke a Hebrah Connect connection (requires confirm_action token and humanIntentMessage)' },
+
   { name: 'set_active_connection', description: 'Set the sandbox connection context for subsequent tools' },
   { name: 'get_account_status', description: 'Org status and connections summary' },
   { name: 'list_connections', description: 'List dashboard connections' },
@@ -214,6 +261,67 @@ export async function callTool(
           `Share this claim URL with the human billing owner (${data.inviteEmail}): ${data.trial.claimUrl}. ` +
           'Use the returned pat as the Bearer token for the new MCP session. Sandbox has synthetic data only — no PHI and no BAA.'
       }
+    }
+    case 'discover_data_sources':
+      return connectFetch(auth, session, '/v1/targets')
+    case 'connect_to_data_source': {
+      const target = String(args.target ?? '').trim()
+      if (!target) throw new Error('target is required; call discover_data_sources first')
+      const rawScopes = args.scopes
+      if (!Array.isArray(rawScopes) || rawScopes.length === 0 || rawScopes.some(scope => typeof scope !== 'string')) {
+        throw new Error('scopes must be a non-empty string array from the target discovery metadata')
+      }
+      consumeCredentialConfirmation(args, 'connect_to_data_source', target)
+      const result = await connectFetch<{ connection_id: string, target: string, scopes: string[], tier: string, expires_at: string }>(
+        auth,
+        session,
+        '/v1/connections',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            target,
+            scopes: rawScopes,
+            tier: args.tier ?? 'container',
+            ttl_seconds: args.ttlSeconds ?? args.ttl_seconds ?? 3600
+          })
+        }
+      )
+      session.connectConnectionId = result.connection_id
+      return {
+        ...result,
+        connectAccountId: session.connectAccountId,
+        note: 'Connection is scoped, TTL-bound, read-only in this milestone, and source credentials remain in the relay.'
+      }
+    }
+    case 'query_data_source': {
+      const connectionId = String(args.connectionId ?? session.connectConnectionId ?? '')
+      const sql = String(args.sql ?? '')
+      if (!connectionId) throw new Error('connectionId is required; call connect_to_data_source first')
+      if (!sql.trim()) throw new Error('sql is required')
+      return connectFetch(auth, session, `/v1/connections/${encodeURIComponent(connectionId)}/query`, {
+        method: 'POST',
+        body: JSON.stringify({ sql })
+      })
+    }
+    case 'get_data_source_audit': {
+      const connectionId = String(args.connectionId ?? session.connectConnectionId ?? '')
+      if (!connectionId) throw new Error('connectionId is required; call connect_to_data_source first')
+      return connectFetch(auth, session, `/v1/connections/${encodeURIComponent(connectionId)}/audit`)
+    }
+    case 'get_connect_usage':
+      return connectFetch(auth, session, '/v1/account/usage')
+    case 'revoke_data_source_connection': {
+      const connectionId = String(args.connectionId ?? session.connectConnectionId ?? '')
+      if (!connectionId) throw new Error('connectionId is required; call connect_to_data_source first')
+      consumeCredentialConfirmation(args, 'revoke_data_source_connection', connectionId)
+      const result = await connectFetch<{ connection_id: string, status: string }>(
+        auth,
+        session,
+        `/v1/connections/${encodeURIComponent(connectionId)}/revoke`,
+        { method: 'POST' }
+      )
+      if (session.connectConnectionId === connectionId) session.connectConnectionId = undefined
+      return result
     }
     case 'set_active_connection': {
       session.activeConnectionId = String(args.connectionId)
@@ -357,11 +465,15 @@ export async function callTool(
       if (CREDENTIAL_CONFIRM_ACTIONS.has(action as ConfirmationAction)) {
         const credentialAction = action as ConfirmationAction
         const connectionId = String(args.connectionId ?? session.activeConnectionId ?? '')
-        if (!connectionId) {
+        if (!connectionId && credentialAction !== 'connect_to_data_source') {
           throw new Error(`connectionId required for confirm_action(${credentialAction})`)
         }
 
         let targetId = connectionId
+        if (credentialAction === 'connect_to_data_source') {
+          targetId = String(args.target ?? '')
+          if (!targetId) throw new Error('target required for confirm_action(connect_to_data_source)')
+        }
         let keyId: string | undefined
         if (credentialAction === 'revoke_sandbox_api_key') {
           keyId = String(args.keyId ?? args.key_id ?? '')
@@ -376,7 +488,8 @@ export async function callTool(
           confirmationToken: token,
           expiresInSeconds: 300,
           action: credentialAction,
-          connectionId,
+          ...(connectionId ? { connectionId } : {}),
+          ...(credentialAction === 'connect_to_data_source' ? { target: targetId } : {}),
           ...(keyId ? { keyId } : {}),
           message: `Pass confirmationToken and humanIntentMessage to ${credentialAction}.`
         }

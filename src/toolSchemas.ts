@@ -25,11 +25,41 @@ export function listToolInputSchema(toolName: string) {
           ehrVendor: { type: 'string' as const, enum: ['Epic', 'Cerner', 'Athena', 'Other'] as const }
         }
       }
-    case 'set_active_connection':
+    case 'connect_to_data_source':
       return {
         type: 'object' as const,
-        required: ['connectionId'],
-        properties: { connectionId: { type: 'string' as const } }
+        required: ['target', 'scopes', 'confirmationToken', 'humanIntentMessage'],
+        properties: {
+          target: { type: 'string' as const, description: 'Target from discover_data_sources' },
+          scopes: { type: 'array' as const, items: { type: 'string' as const }, description: 'Exact required scopes from discovery' },
+          tier: { type: 'string' as const, enum: ['container', 'vm'] as const },
+          ttlSeconds: { type: 'number' as const, minimum: 60, maximum: 86400 },
+          confirmationToken: { type: 'string' as const },
+          humanIntentMessage: { type: 'string' as const }
+        }
+      }
+    case 'query_data_source':
+      return {
+        type: 'object' as const,
+        required: ['sql'],
+        properties: {
+          connectionId: { type: 'string' as const },
+          sql: { type: 'string' as const, description: 'One read-only scoped query' }
+        }
+      }
+    case 'get_data_source_audit':
+    case 'get_connect_usage':
+    case 'discover_data_sources':
+      return emptySchema
+    case 'revoke_data_source_connection':
+      return {
+        type: 'object' as const,
+        required: ['confirmationToken', 'humanIntentMessage'],
+        properties: {
+          connectionId: { type: 'string' as const },
+          confirmationToken: { type: 'string' as const },
+          humanIntentMessage: { type: 'string' as const }
+        }
       }
     case 'confirm_action':
       return {
@@ -43,8 +73,9 @@ export function listToolInputSchema(toolName: string) {
               'remove_connection',
               'create_sandbox_api_key',
               'rotate_connection_webhook_secret',
-              'revoke_sandbox_api_key',
-              'set_connection_webhook_url'
+            'revoke_sandbox_api_key',
+              'set_connection_webhook_url',
+              'revoke_data_source_connection'
             ] as const
           },
           connectionId: { type: 'string' as const },

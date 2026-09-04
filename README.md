@@ -80,6 +80,8 @@ docker run --rm -p 3021:3021 --env-file .env hebrah-mcp-host
 | `HEBRAH_SANDBOX_API_KEY` | *(required)* | Org `hb_test_*` from onboarding Step 2 — **not** the PAT |
 | `MCP_INTERNAL_SECRET` | *(required, ≥ 32 chars)* | Shared with hebrah-app for audit log + MCP ACL lookup |
 | `ALLOW_HEADLESS_SIGNUP` | `false` | Expose `create_account` to authenticated MCP clients; keep disabled on shared/public hosts unless abuse monitoring is configured |
+| `HEBRAH_CONNECT_URL` | `http://localhost:3040` | Hebrah Connect control plane for the private-data connectivity tools |
+| `HEBRAH_CONNECT_API_KEY` | *(empty)* | Shared `hb_conn_*` key for all orgs; when empty, each MCP session creates its own demo Connect account |
 | `REDIS_URL` | *(optional)* | Optional Redis for shared rate-limit counters |
 | `ORCHESTRATOR_URL` | `http://localhost:8090` | HL7 flight checks |
 | `ORCHESTRATOR_SECRET` | *(empty)* | Orchestrator auth |
@@ -134,12 +136,31 @@ Mutating tools that return or affect secrets require a two-step `confirm_action`
 | `revoke_sandbox_api_key` | `revoke_sandbox_api_key` (requires `keyId` on both steps) |
 | `approve_promotion` | `approve_promotion` |
 | `remove_connection` | `remove_connection` |
+| `connect_to_data_source` | `connect_to_data_source` (target-scoped) |
+| `revoke_data_source_connection` | `revoke_data_source_connection` |
 
 The token is action- and target-scoped, expires after 5 minutes, and can only be consumed once. Plaintext keys are returned once on the write step.
 
 Implementation: [`src/guardrails.ts`](./src/guardrails.ts).
 
 ---
+
+## Hebrah Connect tools (private-data connectivity)
+
+Six tools bridge MCP clients to the Hebrah Connect slice ([hebrah-connect](../hebrah-connect)):
+
+```
+discover_data_sources → confirm_action → connect_to_data_source → query_data_source
+                                                          ↘ get_data_source_audit
+                                                          ↘ get_connect_usage
+                                                          ↘ revoke_data_source_connection
+```
+
+- Discovery (`discover_data_sources`) returns registered targets, required scope grammar, tiers, and relay health.
+- `connect_to_data_source` is **confirmation-gated** (action + target-scoped token) because it grants data access.
+- `query_data_source` executes one read-only, scope-enforced query; the source credential never leaves the relay.
+- `revoke_data_source_connection` is also confirmation-gated to prevent an agent from silently dropping an operator's active connection.
+- Session Connect accounts: when `HEBRAH_CONNECT_API_KEY` is unset, the host creates one demo Connect account per MCP session (in-memory; quotas reset on host restart). Set the shared key for hosted deployments.
 
 ## Sandbox-only policy
 

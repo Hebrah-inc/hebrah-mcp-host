@@ -15,6 +15,8 @@ export type ConfirmationAction =
   | 'rotate_connection_webhook_secret'
   | 'revoke_sandbox_api_key'
   | 'set_connection_webhook_url'
+  | 'connect_to_data_source'
+  | 'revoke_data_source_connection'
 
 type PendingConfirmation = {
   action: ConfirmationAction

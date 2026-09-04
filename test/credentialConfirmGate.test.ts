@@ -14,6 +14,24 @@ const auth: McpAuth = {
 const connectionId = 'conn-sa-demo'
 
 describe('credential write confirm gate', () => {
+  it('requires confirmation before connecting to a data source', async () => {
+    await assert.rejects(
+      () => callTool(auth, 'connect-gate-session', 'connect_to_data_source', {
+        target: 'postgresql://client-erp:5432/audit',
+        scopes: ['gl:read', 'period:2025-Q4', 'accounts:1000-3999'],
+        humanIntentMessage: 'Connect the audit evidence demo target'
+      }),
+      /confirm_action first/
+    )
+
+    const result = await callTool(auth, 'confirm-gate-session', 'confirm_action', {
+      action: 'connect_to_data_source',
+      target: 'postgresql://client-erp:5432/audit'
+    }) as { confirmationToken: string, target: string }
+    assert.equal(result.target, 'postgresql://client-erp:5432/audit')
+    assert.match(result.confirmationToken, /^confirm_/)
+  })
+
   it('rejects create_sandbox_api_key without humanIntentMessage', async () => {
     await assert.rejects(
       () => callTool(auth, 'credential-gate-session', 'create_sandbox_api_key', {
