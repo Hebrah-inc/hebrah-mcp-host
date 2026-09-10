@@ -20,7 +20,10 @@ import {
 } from './webhookUrl.js'
 
 export type McpAuth = {
+  mode: 'pat' | 'agent'
+  /** PAT mode: dashboard PAT. Agent mode: the agent's hb_conn_* key. */
   pat: string
+  agentKey?: string
   orgId: string
   tokenId: string
   mcpAcl: McpAcl
@@ -95,6 +98,58 @@ async function ultraFetch<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 
+/**
+ * Agent-surface fetch: forwards the caller's hb_conn_* agent key to the
+ * merged hebrah-api control plane. Scopes, metering, and audit attribute
+ * to the agent's org.
+ */
+async function agentApiFetch<T>(
+  auth: McpAuth,
+  path: string,
+  init?: RequestInit
+): Promise<T> {
+  const res = await fetch(`${config.hebrahApiUrl}${path}`, {
+    ...init,
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${auth.agentKey}`,
+      ...(init?.headers ?? {})
+    },
+    signal: AbortSignal.timeout(30_000)
+  })
+  if (!res.ok) {
+    let message = `agent API ${path} failed (${res.status})`
+    try {
+      const body = await res.json() as { detail?: { message?: string } | string }
+      if (typeof body.detail === 'object' && body.detail?.message) message = body.detail.message
+      else if (typeof body.detail === 'string') message = body.detail
+    } catch {
+      // non-JSON error body — keep the default message
+    }
+    throw new Error(message)
+  }
+  return res.json() as Promise<T>
+}
+
+/** Tools available in agent-key (hb_conn_*) sessions. */
+export const AGENT_TOOL_NAMES = [
+  'discover_data_sources',
+  'connect_to_data_source',
+  'query_data_source',
+  'get_data_source_audit',
+  'get_connect_usage',
+  'revoke_data_source_connection'
+] as const
+
+export const agentToolDefinitions = [
+  { name: 'discover_data_sources', description: 'List every connector target (12 demo targets across 6 packs + live Stripe) with required scopes, tiers, and health' },
+  { name: 'connect_to_data_source', description: 'Open a scoped, TTL-bound connection to a target (target_id + scopes from discovery); the agent never receives the source credential' },
+  { name: 'query_data_source', description: 'Run one read-only, scope-enforced query; returns rows, cost_cents, bytes_egressed, and audit_event_id' },
+  { name: 'get_data_source_audit', description: 'Read the hash-chained audit events for a connection' },
+  { name: 'get_connect_usage', description: 'Read trial quota, remaining queries/egress, and wallet balance' },
+  { name: 'revoke_data_source_connection', description: 'Revoke a connection instantly — one call, audited; the audit trail stays verifiable' }
+] as const
+
 async function assertPromoteToLiveAllowed(pat: string): Promise<void> {
   const status = await dashboardFetch<{ canPromoteToLive?: boolean }>(pat, '/api/org/status')
   assertCanPromoteToLive(status.canPromoteToLive)
@@ -140,17 +195,10 @@ async function dashboardFetch<T>(pat: string, path: string, init?: RequestInit):
 }
 
 export const bootstrapToolDefinitions = [
-  { name: 'create_account', description: 'Create a no-PHI Sandbox trial (500 messages + 100 webhook deliveries) and invite a human billing owner; available only when ALLOW_HEADLESS_SIGNUP=true' }
+  { name: 'create_account', description: 'Create a Hebrah agent account headlessly — $1 trial credit, 100 queries, 5 MB egress, 7 days, no card. Available only when ALLOW_HEADLESS_SIGNUP=true' }
 ]
 
 export const toolDefinitions = [
-  { name: 'discover_data_sources', description: 'Discover registered Hebrah Connect private-data targets, required scopes, supported tiers, and relay health' },
-  { name: 'connect_to_data_source', description: 'Create a scoped, TTL-bound connection to a registered demo/private target; the agent never receives the source credential' },
-  { name: 'query_data_source', description: 'Run one read-only, scope-enforced query through a Hebrah Connect connection; returns rows, metering, and audit event id' },
-  { name: 'get_data_source_audit', description: 'Read the hash-chained audit events for a Hebrah Connect connection' },
-  { name: 'get_connect_usage', description: 'Read Hebrah Connect trial quota and usage counters for this MCP session' },
-  { name: 'revoke_data_source_connection', description: 'Revoke a Hebrah Connect connection (requires confirm_action token and humanIntentMessage)' },
-
   { name: 'set_active_connection', description: 'Set the sandbox connection context for subsequent tools' },
   { name: 'get_account_status', description: 'Org status and connections summary' },
   { name: 'list_connections', description: 'List dashboard connections' },
@@ -224,6 +272,82 @@ export async function callTool(
   if (!auth.bootstrap) await checkRateLimit(auth.orgId, name)
   const session = getSession(sessionId)
 
+  // Agent-key (hb_conn_*) sessions: the connection surface only. These
+  // forward the agent key to the merged hebrah-api — scopes, metering, and
+  // audit attribute to the agent's org.
+  if (auth.mode === 'agent') {
+    if (!(AGENT_TOOL_NAMES as readonly string[]).includes(name)) {
+      throw new Error(
+        `${name} requires a dashboard PAT session (hb_pat_*). Agent-key sessions expose the connection tools only: ${AGENT_TOOL_NAMES.join(', ')}`
+      )
+    }
+    switch (name) {
+      case 'discover_data_sources':
+        return agentApiFetch(auth, '/v1/connections/targets')
+      case 'connect_to_data_source': {
+        const target = String(args.target_id ?? args.target ?? '').trim()
+        if (!target) throw new Error('target_id is required; call discover_data_sources first')
+        const rawScopes = args.scopes
+        if (!Array.isArray(rawScopes) || rawScopes.length === 0 || rawScopes.some(scope => typeof scope !== 'string')) {
+          throw new Error('scopes must be a non-empty string array from the target discovery metadata')
+        }
+        const result = await agentApiFetch<{ connectionId: string, audit_genesis_hash?: string }>(
+          auth,
+          '/v1/connections',
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              target_id: target,
+              scopes: rawScopes,
+              tier: args.tier ?? 'container',
+              ttl_seconds: args.ttlSeconds ?? args.ttl_seconds ?? 3600
+            })
+          }
+        )
+        session.connectConnectionId = result.connectionId
+        return {
+          ...result,
+          note: 'Connection is scoped, TTL-bound, read-only, and audited. Every query appends to the hash-chained audit trail.'
+        }
+      }
+      case 'query_data_source': {
+        const connectionId = String(args.connectionId ?? session.connectConnectionId ?? '')
+        const sql = String(args.sql ?? '')
+        if (!connectionId) throw new Error('connectionId is required; call connect_to_data_source first')
+        if (!sql.trim()) throw new Error('sql is required')
+        return agentApiFetch(auth, `/v1/connections/${encodeURIComponent(connectionId)}/query`, {
+          method: 'POST',
+          body: JSON.stringify({ sql })
+        })
+      }
+      case 'get_data_source_audit': {
+        const connectionId = String(args.connectionId ?? session.connectConnectionId ?? '')
+        if (!connectionId) throw new Error('connectionId is required; call connect_to_data_source first')
+        return agentApiFetch(auth, `/v1/connections/${encodeURIComponent(connectionId)}/audit`)
+      }
+      case 'get_connect_usage':
+        return agentApiFetch(auth, '/v1/agent/account/usage')
+      case 'revoke_data_source_connection': {
+        const connectionId = String(args.connectionId ?? session.connectConnectionId ?? '')
+        if (!connectionId) throw new Error('connectionId is required; call connect_to_data_source first')
+        const result = await agentApiFetch<{ connectionId: string, status: string }>(
+          auth,
+          `/v1/connections/${encodeURIComponent(connectionId)}/revoke`,
+          { method: 'POST' }
+        )
+        if (session.connectConnectionId === connectionId) {
+          delete session.connectConnectionId
+        }
+        return {
+          ...result,
+          note: 'Connection revoked instantly. Its audit trail remains verifiable.'
+        }
+      }
+      default:
+        throw new Error(`Unknown agent tool: ${name}`)
+    }
+  }
+
   switch (name) {
     case 'create_account': {
       if (!auth.bootstrap || !config.allowHeadlessSignup) {
@@ -232,34 +356,38 @@ export async function callTool(
       const orgName = String(args.orgName ?? '').trim()
       if (!orgName) throw new Error('orgName is required for create_account')
       const inviteEmail = String(args.inviteEmail ?? '').trim()
-      if (!inviteEmail || !inviteEmail.includes('@')) {
-        throw new Error('inviteEmail is required — a human team member must claim the org and own payment.')
+      if (inviteEmail && !inviteEmail.includes('@')) {
+        throw new Error('inviteEmail must be a valid email if provided')
       }
-      const body: Record<string, unknown> = { orgName, inviteEmail }
+      const body: Record<string, unknown> = { orgName, headless: true }
       if (args.agentName) body.agentName = String(args.agentName)
-      if (args.ehrVendor) body.ehrVendor = String(args.ehrVendor)
+      if (inviteEmail) body.inviteEmail = inviteEmail
 
-      const result = await fetch(`${config.dashboardUrl}/api/signup/headless`, {
+      const result = await fetch(`${config.hebrahApiUrl}/v1/agent/account`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(30_000)
       })
       if (!result.ok) {
-        throw new Error(`Headless signup failed (${result.status}): ${await result.text()}`)
+        throw new Error(`Agent signup failed (${result.status}): ${await result.text()}`)
       }
       const data = await result.json() as {
         orgId: string
-        pat: string
+        apiKey: string
+        keyPrefix: string
         mcpEndpointUrl: string
-        trial: { credits: { messages: number, webhookDeliveries: number }, claimUrl: string, claimExpiresAt: string }
-        inviteEmail: string
+        trial: { credits: { queries: number, egressBytes: number }, expires_at: string }
       }
       return {
-        ...data,
-        note: `Trial Sandbox created with ${data.trial.credits.messages} messages and ${data.trial.credits.webhookDeliveries} webhook deliveries. ` +
-          `Share this claim URL with the human billing owner (${data.inviteEmail}): ${data.trial.claimUrl}. ` +
-          'Use the returned pat as the Bearer token for the new MCP session. Sandbox has synthetic data only — no PHI and no BAA.'
+        orgId: data.orgId,
+        apiKey: data.apiKey,
+        keyPrefix: data.keyPrefix,
+        mcpEndpointUrl: data.mcpEndpointUrl,
+        trial: data.trial,
+        note: `Agent account created — $1 trial credit (100 queries, 5 MB egress, 7 days). ` +
+          `Save the apiKey (${data.keyPrefix}…) now — it is shown once. ` +
+          'Reconnect to this MCP server with "Authorization: Bearer <apiKey>" to use the connection tools, or call the agent API directly.'
       }
     }
     case 'discover_data_sources':

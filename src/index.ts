@@ -13,12 +13,23 @@ import { logMcpAudit } from './audit.js'
 import { wrapSseResponseWithKeepalive } from './sseKeepalive.js'
 import { filterToolsForAcl, normalizeMcpAcl } from './connectionPolicyGate.js'
 import { listToolInputSchema } from './toolSchemas.js'
-import { callTool, bootstrapToolDefinitions, toolDefinitions, validatePat, type McpAuth } from './tools.js'
+import { createHash } from 'node:crypto'
+import {
+  callTool,
+  bootstrapToolDefinitions,
+  toolDefinitions,
+  agentToolDefinitions,
+  AGENT_TOOL_NAMES,
+  validatePat,
+  type McpAuth
+} from './tools.js'
 
-function extractPat(authHeader: string | undefined): string | null {
+function extractBearerToken(authHeader: string | undefined): { token: string, kind: 'pat' | 'agent' } | null {
   if (!authHeader?.startsWith('Bearer ')) return null
   const token = authHeader.slice(7).trim()
-  return token.startsWith('hb_pat_') ? token : null
+  if (token.startsWith('hb_pat_')) return { token, kind: 'pat' }
+  if (token.startsWith('hb_conn_')) return { token, kind: 'agent' }
+  return null
 }
 
 function policyDecisionFromError(message: string): string {
@@ -55,7 +66,7 @@ const MCP_SERVER_INSTRUCTIONS = [
   'For private enterprise data, use discover_data_sources → confirm_action → connect_to_data_source → query_data_source; connections are scoped, read-only, TTL-bound, and auditable.',
   'For application integration code, use the official Node SDK @hebrah/sdk (npm install @hebrah/sdk).',
   'Call get_sdk_reference for full SDK docs, API surface, and MCP-to-SDK mapping — do not web-search npm.',
-  'MCP uses hb_pat_* tokens; the SDK uses per-connection hb_test_* API keys from credential MCP tools.'
+  'Agents authenticate with hb_conn_* keys (from POST /v1/agent/account or create_account); dashboard integrators use hb_pat_* tokens.'
 ].join(' ')
 
 function createMcpServer(auth: McpAuth, sessionId: string) {
@@ -68,7 +79,12 @@ function createMcpServer(auth: McpAuth, sessionId: string) {
   )
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: (auth.bootstrap ? bootstrapToolDefinitions : filterToolsForAcl(toolDefinitions, auth.mcpAcl)).map(t => ({
+    tools: (auth.bootstrap
+      ? bootstrapToolDefinitions
+      : auth.mode === 'agent'
+        ? agentToolDefinitions
+        : filterToolsForAcl(toolDefinitions, auth.mcpAcl)
+    ).map(t => ({
       ...t,
       inputSchema: listToolInputSchema(t.name)
     }))
@@ -177,11 +193,25 @@ app.get('/health', c => c.json({ ok: true }))
 
 app.all('/mcp', async (c) => {
   const sessionHeader = c.req.header('mcp-session-id')
-  const pat = extractPat(c.req.header('authorization'))
+  const bearer = extractBearerToken(c.req.header('authorization'))
   const existingSession = sessionHeader ? mcpSessions.get(sessionHeader) : undefined
 
   let auth: McpAuth
-  if (pat) {
+  if (bearer?.kind === 'agent') {
+    // Agent-key session (hb_conn_*): the key is validated by the merged
+    // hebrah-api on every call — no dashboard lookup needed. The hashed key
+    // acts as the session-org discriminator.
+    const agent = bearer.token
+    auth = {
+      mode: 'agent',
+      pat: '',
+      agentKey: agent,
+      orgId: `agent:${createHash('sha256').update(agent).digest('hex').slice(0, 16)}`,
+      tokenId: 'agent-key',
+      mcpAcl: normalizeMcpAcl()
+    }
+  } else if (bearer) {
+    const pat = bearer.token
     let validated
     try {
       validated = await validatePat(pat)
@@ -194,6 +224,7 @@ app.all('/mcp', async (c) => {
       return c.json({ error: 'Invalid or expired token' }, 401)
     }
     auth = {
+      mode: 'pat',
       pat,
       orgId: validated.orgId,
       tokenId: validated.tokenId,
@@ -206,6 +237,7 @@ app.all('/mcp', async (c) => {
   } else if (config.allowHeadlessSignup && !sessionHeader) {
     // A PAT cannot be required for the very tool that creates the first PAT.
     auth = {
+      mode: 'pat',
       pat: '',
       orgId: '',
       tokenId: '',
@@ -213,8 +245,8 @@ app.all('/mcp', async (c) => {
       bootstrap: true
     }
   } else {
-    console.warn('[mcp] rejected: missing Bearer hb_pat_* token')
-    return c.json({ error: 'Missing Bearer hb_pat_* token' }, 401)
+    console.warn('[mcp] rejected: missing Bearer hb_pat_* / hb_conn_* token')
+    return c.json({ error: 'Missing Bearer token (hb_pat_* for dashboard sessions, hb_conn_* for agent sessions)' }, 401)
   }
 
   const requestSessionId = c.req.header('mcp-session-id') ?? undefined
