@@ -138,7 +138,11 @@ export const AGENT_TOOL_NAMES = [
   'query_data_source',
   'get_data_source_audit',
   'get_connect_usage',
-  'revoke_data_source_connection'
+  'revoke_data_source_connection',
+  'get_wallet_status',
+  'set_auto_reload',
+  'create_topup',
+  'get_usage_forecast'
 ] as const
 
 export const agentToolDefinitions = [
@@ -147,6 +151,10 @@ export const agentToolDefinitions = [
   { name: 'query_data_source', description: 'Run one read-only, scope-enforced query; returns rows, cost_cents, bytes_egressed, and audit_event_id' },
   { name: 'get_data_source_audit', description: 'Read the hash-chained audit events for a connection' },
   { name: 'get_connect_usage', description: 'Read trial quota, remaining queries/egress, and wallet balance' },
+  { name: 'get_wallet_status', description: 'Read wallet balance, auto-reload config, 30-day burn rate, and projected runway', inputSchema: { type: 'object', properties: {}, required: [] } },
+  { name: 'set_auto_reload', description: 'Enable or disable auto-reload and set the threshold ($1-$10,000) and reload amount ($5-$10,000). Defaults: $5 threshold / $20 reload. Call get_wallet_status first to see current state.', inputSchema: { type: 'object', properties: { auto_reload_enabled: { type: 'boolean', description: 'true = enable auto-reload' }, auto_reload_threshold_cents: { type: 'number', description: 'Trigger when balance drops below this (cents; min 100, max 1,000,000)' }, auto_reload_amount_cents: { type: 'number', description: 'Reload amount per trigger (cents; min 500, max 1,000,000)' } }, required: ['auto_reload_enabled'] } },
+  { name: 'create_topup', description: 'Create a Stripe Checkout session for a one-time credit purchase', inputSchema: { type: 'object', properties: { amount_cents: { type: 'number', description: 'Amount in cents (min 100 = $1, max 1,000,000 = $10,000)' } }, required: ['amount_cents'] } },
+  { name: 'get_usage_forecast', description: '30-day burn rate + projected days to empty (auto-reload on = no runway needed)', inputSchema: { type: 'object', properties: {}, required: [] } },
   { name: 'revoke_data_source_connection', description: 'Revoke a connection instantly — one call, audited; the audit trail stays verifiable' }
 ] as const
 
@@ -327,6 +335,23 @@ export async function callTool(
       }
       case 'get_connect_usage':
         return agentApiFetch(auth, '/v1/agent/account/usage')
+      case 'get_wallet_status':
+        return agentApiFetch(auth, '/v1/agent/wallet')
+      case 'set_auto_reload': {
+        const enabled = Boolean(args.autoReloadEnabled)
+        const body: Record<string, unknown> = { auto_reload_enabled: enabled }
+        if (args.autoReloadThresholdCents !== undefined) body.auto_reload_threshold_cents = args.autoReloadThresholdCents
+        if (args.autoReloadAmountCents !== undefined) body.auto_reload_amount_cents = args.auto_reload_amount_cents ?? args.autoReloadAmountCents
+        return agentApiFetch(auth, '/v1/agent/wallet/config', { method: 'POST', body: JSON.stringify(body) })
+      }
+      case 'create_topup': {
+        const amountCents = Number(args.amount_cents ?? 2000)
+        if (!amountCents || amountCents < 100) throw new Error('amount_cents must be >= 100 ($1)')
+        if (amountCents > 1_000_000) throw new Error('amount_cents must be <= 1,000,000 ($10,000)')
+        return agentApiFetch(auth, '/v1/agent/topup', { method: 'POST', body: JSON.stringify({ amount_cents: amountCents }) })
+      }
+      case 'get_usage_forecast':
+        return agentApiFetch(auth, '/v1/agent/wallet')
       case 'revoke_data_source_connection': {
         const connectionId = String(args.connectionId ?? session.connectConnectionId ?? '')
         if (!connectionId) throw new Error('connectionId is required; call connect_to_data_source first')
