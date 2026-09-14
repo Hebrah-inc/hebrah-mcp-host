@@ -118,6 +118,49 @@ describe('bootstrap sessions (no auth)', () => {
     ;(config as { allowHeadlessSignup: boolean }).allowHeadlessSignup = original
   })
 
+  it('create_account formats claim URL and chat markdown when inviteEmail is provided', async () => {
+    const { config } = await import('../src/config.js')
+    const original = config.allowHeadlessSignup
+    ;(config as { allowHeadlessSignup: boolean }).allowHeadlessSignup = true
+
+    // Mock fetch returning claimUrl
+    // @ts-expect-error test stub
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), init })
+      return mockResponse({
+        orgId: 'org-claim-1',
+        orgName: 'Alpha Medical',
+        apiKey: 'hb_conn_claim_test1234567890abcdef',
+        keyPrefix: 'hb_conn_claim_...',
+        mcpEndpointUrl: 'http://mcp.test/mcp',
+        claimUrl: 'https://app.hebrah.com/claim-org/abc123token456',
+        inviteEmail: 'dr.smith@example.com',
+        trial: { credits: { queries: 100, egressBytes: 5_000_000 }, expires_at: '2026-09-22T00:00:00Z' }
+      })
+    }
+
+    const result = await callTool(
+      bootstrapAuth,
+      'sess-bootstrap-claim',
+      'create_account',
+      { orgName: 'Alpha Medical', inviteEmail: 'dr.smith@example.com' }
+    ) as {
+      apiKey: string
+      claimUrl: string
+      inviteEmail: string
+      markdown: string
+      note: string
+    }
+
+    assert.equal(result.claimUrl, 'https://app.hebrah.com/claim-org/abc123token456')
+    assert.equal(result.inviteEmail, 'dr.smith@example.com')
+    assert.match(result.markdown, /🎉 Hebrah Account Created for \*\*Alpha Medical\*\*/)
+    assert.match(result.markdown, /Claim Alpha Medical on Hebrah/)
+    assert.match(result.markdown, /https:\/\/app\.hebrah\.com\/claim-org\/abc123token456/)
+    assert.match(result.note, /Claim the organization at https:\/\/app\.hebrah\.com\/claim-org\/abc123token456/)
+    ;(config as { allowHeadlessSignup: boolean }).allowHeadlessSignup = original
+  })
+
   it('create_account requires allowHeadlessSignup', async () => {
     const { config } = await import('../src/config.js')
     const original = config.allowHeadlessSignup

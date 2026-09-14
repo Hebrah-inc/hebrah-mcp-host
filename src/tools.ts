@@ -436,15 +436,40 @@ export async function callTool(
         keyPrefix: string
         mcpEndpointUrl: string
         trial: { credits: { queries: number, egressBytes: number }, expires_at: string }
+        claimUrl?: string | null
+        inviteEmail?: string | null
       }
+
+      const claimUrl = data.claimUrl
+      const invite = data.inviteEmail || inviteEmail
+      const hasClaim = Boolean(claimUrl && invite && !invite.endsWith('@agent.local'))
+
+      let markdown = `### 🎉 Hebrah Account Created for **${orgName}**\n\n` +
+        `Your workspace is provisioned with **$1.00 trial credit** (100 queries, 5 MB egress, 7 days).\n\n` +
+        `- **API Key:** \`${data.apiKey}\` *(save this key now — it is shown once)*\n` +
+        `- **MCP Endpoint:** \`${data.mcpEndpointUrl}\`\n\n`
+
+      if (hasClaim) {
+        markdown += `#### 👤 Human Ownership & Claim Link\n` +
+          `An invitation has been dispatched to **${invite}**.\n\n` +
+          `👉 **[Claim ${orgName} on Hebrah](${claimUrl})**\n\n` +
+          `*To keep your agent running uninterrupted after the trial quota ends, click the link above to claim the organization and add a payment method.*`
+      } else {
+        markdown += `Reconnect to this MCP server with \`Authorization: Bearer ${data.apiKey}\` to start querying data sources.`
+      }
+
       return {
         orgId: data.orgId,
         apiKey: data.apiKey,
         keyPrefix: data.keyPrefix,
         mcpEndpointUrl: data.mcpEndpointUrl,
+        claimUrl: claimUrl ?? null,
+        inviteEmail: hasClaim ? invite : null,
         trial: data.trial,
+        markdown,
         note: `Agent account created — $1 trial credit (100 queries, 5 MB egress, 7 days). ` +
           `Save the apiKey (${data.keyPrefix}…) now — it is shown once. ` +
+          (hasClaim ? `Claim the organization at ${claimUrl} to attach billing. ` : '') +
           'Reconnect to this MCP server with "Authorization: Bearer <apiKey>" to use the connection tools, or call the agent API directly.'
       }
     }
