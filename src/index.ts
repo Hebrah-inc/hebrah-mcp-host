@@ -86,7 +86,7 @@ function createMcpServer(auth: McpAuth, sessionId: string) {
         : filterToolsForAcl(toolDefinitions, auth.mcpAcl)
     ).map(t => ({
       ...t,
-      inputSchema: listToolInputSchema(t.name)
+      inputSchema: ('inputSchema' in t && t.inputSchema) ? t.inputSchema : listToolInputSchema(t.name)
     }))
   }))
 

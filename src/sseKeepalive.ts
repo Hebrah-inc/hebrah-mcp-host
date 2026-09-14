@@ -22,6 +22,9 @@ export function wrapSseResponseWithKeepalive(response: Response): Response {
           if (keepaliveTimer) clearInterval(keepaliveTimer)
         }
       }, SSE_KEEPALIVE_INTERVAL_MS)
+      if (typeof keepaliveTimer === 'object' && keepaliveTimer !== null && 'unref' in keepaliveTimer) {
+        (keepaliveTimer as { unref: () => void }).unref()
+      }
 
       const pump = async () => {
         try {

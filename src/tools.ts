@@ -146,16 +146,49 @@ export const AGENT_TOOL_NAMES = [
 ] as const
 
 export const agentToolDefinitions = [
-  { name: 'discover_data_sources', description: 'List every connector target (12 demo targets across 6 packs + live Stripe) with required scopes, tiers, and health' },
-  { name: 'connect_to_data_source', description: 'Open a scoped, TTL-bound connection to a target (target_id + scopes from discovery); the agent never receives the source credential' },
-  { name: 'query_data_source', description: 'Run one read-only, scope-enforced query; returns rows, cost_cents, bytes_egressed, and audit_event_id' },
+  { name: 'discover_data_sources', description: 'List every connector target with required scopes, tiers, and health' },
+  {
+    name: 'connect_to_data_source',
+    description: 'Open a scoped, TTL-bound connection to a target (target_id + scopes from discovery); the agent never receives the source credential',
+    inputSchema: {
+      type: 'object',
+      required: ['target_id', 'scopes'],
+      properties: {
+        target_id: { type: 'string', description: 'Target id from discover_data_sources' },
+        scopes: { type: 'array', items: { type: 'string' }, description: 'Exact required scopes from discovery' },
+        tier: { type: 'string', enum: ['container', 'vm'] },
+        ttl_seconds: { type: 'number', minimum: 60, maximum: 86400 }
+      }
+    }
+  },
+  {
+    name: 'query_data_source',
+    description: 'Run one read-only, scope-enforced query; returns rows, cost_cents, bytes_egressed, and audit_event_id',
+    inputSchema: {
+      type: 'object',
+      required: ['sql'],
+      properties: {
+        connectionId: { type: 'string', description: 'Connection ID (optional; defaults to the current session connection)' },
+        sql: { type: 'string', description: 'One read-only scoped query' }
+      }
+    }
+  },
   { name: 'get_data_source_audit', description: 'Read the hash-chained audit events for a connection' },
   { name: 'get_connect_usage', description: 'Read trial quota, remaining queries/egress, and wallet balance' },
   { name: 'get_wallet_status', description: 'Read wallet balance, auto-reload config, 30-day burn rate, and projected runway', inputSchema: { type: 'object', properties: {}, required: [] } },
   { name: 'set_auto_reload', description: 'Enable or disable auto-reload and set the threshold ($1-$10,000) and reload amount ($5-$10,000). Defaults: $5 threshold / $20 reload. Call get_wallet_status first to see current state.', inputSchema: { type: 'object', properties: { auto_reload_enabled: { type: 'boolean', description: 'true = enable auto-reload' }, auto_reload_threshold_cents: { type: 'number', description: 'Trigger when balance drops below this (cents; min 100, max 1,000,000)' }, auto_reload_amount_cents: { type: 'number', description: 'Reload amount per trigger (cents; min 500, max 1,000,000)' } }, required: ['auto_reload_enabled'] } },
   { name: 'create_topup', description: 'Create a Stripe Checkout session for a one-time credit purchase', inputSchema: { type: 'object', properties: { amount_cents: { type: 'number', description: 'Amount in cents (min 100 = $1, max 1,000,000 = $10,000)' } }, required: ['amount_cents'] } },
   { name: 'get_usage_forecast', description: '30-day burn rate + projected days to empty (auto-reload on = no runway needed)', inputSchema: { type: 'object', properties: {}, required: [] } },
-  { name: 'revoke_data_source_connection', description: 'Revoke a connection instantly — one call, audited; the audit trail stays verifiable' }
+  {
+    name: 'revoke_data_source_connection',
+    description: 'Revoke a connection instantly — one call, audited; the audit trail stays verifiable',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        connectionId: { type: 'string', description: 'Connection ID to revoke (optional; defaults to the current session connection)' }
+      }
+    }
+  }
 ] as const
 
 async function assertPromoteToLiveAllowed(pat: string): Promise<void> {
