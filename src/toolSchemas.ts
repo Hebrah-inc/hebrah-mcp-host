@@ -221,6 +221,72 @@ export function listToolInputSchema(toolName: string) {
           ecg_id: { type: 'string' as const }
         }
       }
+    case 'env_list':
+      return {
+        type: 'object' as const,
+        properties: {
+          include_destroyed: { type: 'boolean' as const, description: 'Whether to include destroyed environments (default: false)' }
+        }
+      }
+    case 'env_create':
+      return {
+        type: 'object' as const,
+        required: ['name'],
+        properties: {
+          name: { type: 'string' as const, description: 'Clinic environment name' },
+          clinic_type: { type: 'string' as const, enum: ['ambulatory', 'hospital', 'cardiology'] as const, description: 'Clinic template (ambulatory, hospital, cardiology)' },
+          patient_cohort: { type: 'string' as const, enum: ['general', 'geriatric', 'pediatric', 'cardiac'] as const, description: 'Synthetic patient cohort' },
+          addons: { type: 'array' as const, items: { type: 'string' as const }, description: 'Database pack modules (postgres, sqlite, vectordb, neo4j)' },
+          patient_count: { type: 'number' as const, description: 'Initial patient pool size (10-1000)' },
+          bed_count: { type: 'number' as const, description: 'Inpatient bed capacity (0-200)' }
+        }
+      }
+    case 'env_get':
+      return {
+        type: 'object' as const,
+        required: ['environment_id'],
+        properties: {
+          environment_id: { type: 'string' as const, description: 'Environment ID (e.g. env_ambulatory_...)' }
+        }
+      }
+    case 'env_query_db':
+      return {
+        type: 'object' as const,
+        required: ['sql'],
+        properties: {
+          environment_id: { type: 'string' as const, description: 'Environment ID (defaults to active session environment)' },
+          sql: { type: 'string' as const, description: 'Read-only SQL query to execute against environment database module' },
+          addon: { type: 'string' as const, enum: ['postgres', 'sqlite'] as const, description: 'Database module (default: postgres)' }
+        }
+      }
+    case 'env_trigger_scenario':
+      return {
+        type: 'object' as const,
+        required: ['scenario'],
+        properties: {
+          environment_id: { type: 'string' as const, description: 'Environment ID (defaults to active session environment)' },
+          scenario: { type: 'string' as const, enum: ['er_arrival', 'lab_critical', 'discharge', 'code_blue', 'vitals_spike'] as const, description: 'Clinical scenario name' },
+          patient_id: { type: 'string' as const, description: 'Optional target patient ID' },
+          notes: { type: 'string' as const, description: 'Optional clinical notes' }
+        }
+      }
+    case 'env_get_patient_chart':
+      return {
+        type: 'object' as const,
+        required: ['patient_id'],
+        properties: {
+          environment_id: { type: 'string' as const, description: 'Environment ID (defaults to active session environment)' },
+          patient_id: { type: 'string' as const, description: 'Patient ID (e.g. pat_001)' }
+        }
+      }
+    case 'env_pause':
+    case 'env_resume':
+      return {
+        type: 'object' as const,
+        properties: {
+          environment_id: { type: 'string' as const, description: 'Environment ID (defaults to active session environment)' }
+        }
+      }
   }
 
   if (
