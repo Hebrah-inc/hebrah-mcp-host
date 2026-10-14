@@ -21,14 +21,31 @@ export type ConfirmationAction =
 type PendingConfirmation = {
   action: ConfirmationAction
   targetId: string
+  orgId: string
   expiresAt: number
 }
 
 type Bucket = { count: number, windowStart: number }
 
+const MAX_BUCKETS = 5_000
+const MAX_PENDING_CONFIRMATIONS = 2_000
+
 const callBuckets = new Map<string, Bucket>()
 const approveBuckets = new Map<string, { count: number, dayStart: number }>()
 const pendingConfirmations = new Map<string, PendingConfirmation>()
+
+function prunePendingConfirmations(now = Date.now()) {
+  for (const [token, entry] of pendingConfirmations) {
+    if (entry.expiresAt < now) {
+      pendingConfirmations.delete(token)
+    }
+  }
+  while (pendingConfirmations.size >= MAX_PENDING_CONFIRMATIONS) {
+    const oldestKey = pendingConfirmations.keys().next().value
+    if (!oldestKey) break
+    pendingConfirmations.delete(oldestKey)
+  }
+}
 
 function dayKey(orgId: string) {
   const d = new Date()
@@ -39,6 +56,15 @@ export async function checkRateLimit(orgId: string, toolName: string): Promise<v
   const key = `${orgId}:${toolName}`
   await incrementRateCounter(key, MAX_CALLS_PER_WINDOW, WINDOW_SEC, () => {
     const now = Date.now()
+    if (callBuckets.size >= MAX_BUCKETS && !callBuckets.has(key)) {
+      for (const [k, b] of callBuckets) {
+        if (now - b.windowStart > WINDOW_MS) callBuckets.delete(k)
+      }
+      if (callBuckets.size >= MAX_BUCKETS) {
+        const oldest = callBuckets.keys().next().value
+        if (oldest) callBuckets.delete(oldest)
+      }
+    }
     const bucket = callBuckets.get(key) ?? { count: 0, windowStart: now }
     if (now - bucket.windowStart > WINDOW_MS) {
       bucket.count = 0
@@ -71,12 +97,15 @@ export async function checkPromotionApproveLimit(orgId: string): Promise<void> {
 
 export function issueConfirmationToken(
   action: ConfirmationAction,
-  targetId: string
+  targetId: string,
+  orgId = ''
 ): string {
+  prunePendingConfirmations()
   const token = `confirm_${crypto.randomUUID().replace(/-/g, '')}`
   pendingConfirmations.set(token, {
     action,
     targetId,
+    orgId,
     expiresAt: Date.now() + CONFIRM_TTL_MS
   })
   return token
@@ -85,11 +114,16 @@ export function issueConfirmationToken(
 export function consumeConfirmationToken(
   token: string,
   action: ConfirmationAction,
-  targetId: string
+  targetId: string,
+  orgId = ''
 ): void {
   const entry = pendingConfirmations.get(token)
   if (!entry || entry.expiresAt < Date.now()) {
+    if (entry) pendingConfirmations.delete(token)
     throw new Error('Invalid or expired confirmation token. Call confirm_action first.')
+  }
+  if (entry.orgId && orgId && entry.orgId !== orgId) {
+    throw new Error('Confirmation token belongs to another organization.')
   }
   if (entry.action !== action || entry.targetId !== targetId) {
     throw new Error('Confirmation token does not match this action.')

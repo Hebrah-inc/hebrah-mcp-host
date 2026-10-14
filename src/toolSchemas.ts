@@ -234,19 +234,42 @@ export function listToolInputSchema(toolName: string) {
         required: ['name'],
         properties: {
           name: { type: 'string' as const, description: 'Clinic environment name' },
-          clinic_type: { type: 'string' as const, enum: ['ambulatory', 'hospital', 'cardiology'] as const, description: 'Clinic template (ambulatory, hospital, cardiology)' },
-          patient_cohort: { type: 'string' as const, enum: ['general', 'geriatric', 'pediatric', 'cardiac'] as const, description: 'Synthetic patient cohort' },
+          clinic_type: {
+            type: 'string' as const,
+            enum: ['ambulatory', 'hospital', 'cardiology', 'ambulatory_clinic', 'hospital_system', 'cardiology_center'] as const,
+            description: 'Clinic template (ambulatory, hospital, cardiology)'
+          },
+          patient_cohort: {
+            type: 'string' as const,
+            enum: ['general', 'geriatric', 'pediatric', 'cardiac', 'mixed'] as const,
+            description: 'Synthetic patient cohort'
+          },
           addons: { type: 'array' as const, items: { type: 'string' as const }, description: 'Database pack modules (postgres, sqlite, vectordb, neo4j)' },
           patient_count: { type: 'number' as const, description: 'Initial patient pool size (10-1000)' },
           bed_count: { type: 'number' as const, description: 'Inpatient bed capacity (0-200)' }
         }
       }
-    case 'env_get':
+    case 'env_connect':
       return {
         type: 'object' as const,
         required: ['environment_id'],
         properties: {
-          environment_id: { type: 'string' as const, description: 'Environment ID (e.g. env_ambulatory_...)' }
+          environment_id: { type: 'string' as const, description: 'Environment ID to connect this agent session to' },
+          agent_name: { type: 'string' as const, description: 'Optional display name for this agent in the Connected Agents table' }
+        }
+      }
+    case 'env_get':
+      return {
+        type: 'object' as const,
+        properties: {
+          environment_id: { type: 'string' as const, description: 'Environment ID (defaults to active session environment)' }
+        }
+      }
+    case 'env_list_tables':
+      return {
+        type: 'object' as const,
+        properties: {
+          environment_id: { type: 'string' as const, description: 'Environment ID (defaults to active session environment)' }
         }
       }
     case 'env_query_db':
@@ -257,6 +280,20 @@ export function listToolInputSchema(toolName: string) {
           environment_id: { type: 'string' as const, description: 'Environment ID (defaults to active session environment)' },
           sql: { type: 'string' as const, description: 'Read-only SQL query to execute against environment database module' },
           addon: { type: 'string' as const, enum: ['postgres', 'sqlite'] as const, description: 'Database module (default: postgres)' }
+        }
+      }
+    case 'env_record_outcome':
+      return {
+        type: 'object' as const,
+        required: ['outcome_type', 'summary'],
+        properties: {
+          environment_id: { type: 'string' as const, description: 'Environment ID (defaults to active session environment)' },
+          outcome_type: { type: 'string' as const, description: 'Clinical outcome category (e.g. sepsis_risk_alert, care_gap_closed, triage_recommendation)' },
+          summary: { type: 'string' as const, description: 'Human-readable summary of the clinical finding or outcome (scanned by DLP filter)' },
+          patient_id: { type: 'string' as const, description: 'Target synthetic patient ID (e.g. pat-4e39-001)' },
+          score: { type: 'number' as const, description: 'Optional numeric risk or confidence score (0-100 or 0.0-1.0)' },
+          source_agent: { type: 'string' as const, description: 'Optional agent identifier attribution' },
+          payload: { type: 'object' as const, description: 'Optional structured JSON metadata for the outcome' }
         }
       }
     case 'env_trigger_scenario':
@@ -270,6 +307,14 @@ export function listToolInputSchema(toolName: string) {
           notes: { type: 'string' as const, description: 'Optional clinical notes' }
         }
       }
+    case 'env_list_patients':
+      return {
+        type: 'object' as const,
+        properties: {
+          environment_id: { type: 'string' as const, description: 'Environment ID (defaults to active session environment)' },
+          limit: { type: 'number' as const, description: 'Maximum number of patients to return (1-200, default: 50)' }
+        }
+      }
     case 'env_get_patient_chart':
       return {
         type: 'object' as const,
@@ -277,6 +322,15 @@ export function listToolInputSchema(toolName: string) {
         properties: {
           environment_id: { type: 'string' as const, description: 'Environment ID (defaults to active session environment)' },
           patient_id: { type: 'string' as const, description: 'Patient ID (e.g. pat_001)' }
+        }
+      }
+    case 'env_get_logs':
+      return {
+        type: 'object' as const,
+        properties: {
+          environment_id: { type: 'string' as const, description: 'Environment ID (defaults to active session environment)' },
+          limit: { type: 'number' as const, description: 'Maximum number of audit log entries to return (1-200, default: 50)' },
+          event_type: { type: 'string' as const, description: 'Optional filter by event_type (e.g. db_query, db_write, scenario_triggered, agent.connected)' }
         }
       }
     case 'env_pause':

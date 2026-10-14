@@ -16,6 +16,7 @@ import { listToolInputSchema } from './toolSchemas.js'
 import { createHash } from 'node:crypto'
 import {
   callTool,
+  deleteSession,
   bootstrapToolDefinitions,
   toolDefinitions,
   agentToolDefinitions,
@@ -24,11 +25,16 @@ import {
   type McpAuth
 } from './tools.js'
 
-function extractBearerToken(authHeader: string | undefined): { token: string, kind: 'pat' | 'agent' } | null {
+const PAT_TOKEN_RE = /^hb_pat_[A-Za-z0-9_-]{6,128}$/
+const AGENT_TOKEN_RE = /^hb_conn_[A-Za-z0-9_-]{6,128}$/
+const MAX_MCP_SESSIONS = 1_000
+const MAX_BODY_BYTES = 1_048_576
+
+export function extractBearerToken(authHeader: string | undefined): { token: string, kind: 'pat' | 'agent' } | null {
   if (!authHeader?.startsWith('Bearer ')) return null
   const token = authHeader.slice(7).trim()
-  if (token.startsWith('hb_pat_')) return { token, kind: 'pat' }
-  if (token.startsWith('hb_conn_')) return { token, kind: 'agent' }
+  if (PAT_TOKEN_RE.test(token)) return { token, kind: 'pat' }
+  if (AGENT_TOKEN_RE.test(token)) return { token, kind: 'agent' }
   return null
 }
 
@@ -62,11 +68,11 @@ function bodyHasInitialize(body: unknown): boolean {
 }
 
 const MCP_SERVER_INSTRUCTIONS = [
-  'Hebrah hosted MCP: use tools for sandbox exploration, dashboard config, and promotions.',
-  'For private enterprise data, use discover_data_sources → confirm_action → connect_to_data_source → query_data_source; connections are scoped, read-only, TTL-bound, and auditable.',
+  'Hebrah hosted MCP: use Isolated Health Environment tools (env_list, env_connect, env_create, env_get, env_list_tables, env_query_db, env_record_outcome, env_trigger_scenario, env_list_patients, env_get_patient_chart, env_get_logs, env_pause, env_resume) for clinic sandbox environments, credential-blind SQL queries, synthetic EHR charts, and clinical scenarios.',
+  'For private enterprise data connectors, use discover_data_sources → confirm_action → connect_to_data_source → query_data_source; connections are scoped, read-only, TTL-bound, and auditable.',
   'For application integration code, use the official Node SDK @hebrah/sdk (npm install @hebrah/sdk).',
   'Call get_sdk_reference for full SDK docs, API surface, and MCP-to-SDK mapping — do not web-search npm.',
-  'Agents authenticate with hb_conn_* keys (from POST /v1/agent/account or create_account); dashboard integrators use hb_pat_* tokens.'
+  'Agents authenticate with hb_conn_* keys (from POST /v1/agent/account, hebrah login, or create_account); dashboard integrators use hb_pat_* tokens.'
 ].join(' ')
 
 function createMcpServer(auth: McpAuth, sessionId: string) {
@@ -167,11 +173,19 @@ async function createMcpSession(auth: McpAuth): Promise<McpSession> {
     enableJsonResponse: true,
     onsessioninitialized: (sid) => {
       if (sessionRef) {
+        if (mcpSessions.size >= MAX_MCP_SESSIONS) {
+          const oldest = mcpSessions.keys().next().value
+          if (oldest) {
+            mcpSessions.delete(oldest)
+            deleteSession(oldest)
+          }
+        }
         mcpSessions.set(sid, sessionRef)
       }
     },
     onsessionclosed: (sid) => {
       mcpSessions.delete(sid)
+      deleteSession(sid)
     }
   })
 
@@ -179,6 +193,7 @@ async function createMcpSession(auth: McpAuth): Promise<McpSession> {
     const sid = transport.sessionId
     if (sid) {
       mcpSessions.delete(sid)
+      deleteSession(sid)
     }
   }
 
@@ -189,9 +204,21 @@ async function createMcpSession(auth: McpAuth): Promise<McpSession> {
 
 const app = new Hono()
 
+app.use('*', async (c, next) => {
+  await next()
+  c.header('X-Content-Type-Options', 'nosniff')
+  c.header('X-Frame-Options', 'DENY')
+  c.header('Cache-Control', 'no-store')
+})
+
 app.get('/health', c => c.json({ ok: true }))
 
 app.all('/mcp', async (c) => {
+  const contentLength = Number(c.req.header('content-length') ?? '0')
+  if (Number.isFinite(contentLength) && contentLength > MAX_BODY_BYTES) {
+    return c.json({ error: 'Payload too large' }, 413)
+  }
+
   const sessionHeader = c.req.header('mcp-session-id')
   const bearer = extractBearerToken(c.req.header('authorization'))
   const existingSession = sessionHeader ? mcpSessions.get(sessionHeader) : undefined
@@ -282,6 +309,7 @@ app.all('/mcp', async (c) => {
       const response = await existing.transport.handleRequest(c.req.raw, handleOptions)
       if (c.req.method === 'DELETE') {
         mcpSessions.delete(requestSessionId)
+        deleteSession(requestSessionId)
       }
       return finalizeMcpResponse(response)
     }

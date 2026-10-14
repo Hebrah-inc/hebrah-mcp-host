@@ -30,6 +30,8 @@ export type McpAuth = {
   bootstrap?: boolean
 }
 
+const MAX_SESSIONS = 1_000
+
 const sessions = new Map<string, {
   activeConnectionId?: string
   connectApiKey?: string
@@ -39,10 +41,107 @@ const sessions = new Map<string, {
 }>()
 
 export function getSession(sessionId: string) {
-  if (!sessions.has(sessionId)) {
-    sessions.set(sessionId, {})
+  let existing = sessions.get(sessionId)
+  if (!existing) {
+    while (sessions.size >= MAX_SESSIONS) {
+      const oldest = sessions.keys().next().value
+      if (!oldest) break
+      sessions.delete(oldest)
+    }
+    existing = {}
+    sessions.set(sessionId, existing)
   }
-  return sessions.get(sessionId)!
+  return existing
+}
+
+export function deleteSession(sessionId: string) {
+  sessions.delete(sessionId)
+}
+
+const SAFE_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/
+
+/**
+ * Validate path-segment identifiers to prevent path traversal (`..`, `/`),
+ * query injection, or empty path segments (`//`).
+ */
+export function safeId(value: unknown, fieldName: string): string {
+  const trimmed = String(value ?? '').trim()
+  if (!trimmed) {
+    throw new Error(`${fieldName} is required`)
+  }
+  if (!SAFE_ID_RE.test(trimmed) || trimmed.includes('..')) {
+    throw new Error(`Invalid ${fieldName}: must match [A-Za-z0-9._:-]{1,128}`)
+  }
+  return encodeURIComponent(trimmed)
+}
+
+function isPrivateOrMetadataHost(hostname: string): { isMetadata: boolean, isPrivateOrLoopback: boolean } {
+  const lower = hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  const isMetadata =
+    lower === 'metadata.google.internal' ||
+    lower === 'metadata' ||
+    lower === '169.254.169.254' ||
+    lower.startsWith('169.254.') ||
+    lower.startsWith('fe80:') ||
+    lower === '0.0.0.0'
+
+  const isLoopback =
+    lower === 'localhost' ||
+    lower === '127.0.0.1' ||
+    lower.startsWith('127.') ||
+    lower === '::1' ||
+    lower === '0:0:0:0:0:0:0:1'
+
+  let isRfc1918 = false
+  const ipv4Match = lower.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
+  if (ipv4Match) {
+    const a = Number(ipv4Match[1])
+    const b = Number(ipv4Match[2])
+    if (a === 10) isRfc1918 = true
+    else if (a === 172 && b >= 16 && b <= 31) isRfc1918 = true
+    else if (a === 192 && b === 168) isRfc1918 = true
+    else if (a === 100 && b >= 64 && b <= 127) isRfc1918 = true
+  }
+  if (
+    lower.startsWith('fc') ||
+    lower.startsWith('fd') ||
+    lower.endsWith('.internal') ||
+    lower.endsWith('.local')
+  ) {
+    isRfc1918 = true
+  }
+
+  return { isMetadata, isPrivateOrLoopback: isLoopback || isRfc1918 }
+}
+
+/**
+ * Guard `sidecar_writeback` URLs against Server-Side Request Forgery (SSRF)
+ * targeting cloud metadata endpoints or internal VPC services.
+ */
+export function assertSafeSidecarUrl(rawUrl: string): string {
+  let parsed: URL
+  try {
+    parsed = new URL(rawUrl.trim())
+  } catch {
+    throw new Error('Invalid sidecar URL')
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error('Sidecar URL must use http:// or https://')
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error('Sidecar URL must not contain embedded credentials')
+  }
+  const { isMetadata, isPrivateOrLoopback } = isPrivateOrMetadataHost(parsed.hostname)
+  if (isMetadata) {
+    throw new Error('Sidecar URL blocked: cloud metadata and link-local addresses are prohibited')
+  }
+  const isHostedCloud = Boolean(process.env.K_SERVICE || process.env.NODE_ENV === 'production')
+  const configuredSidecar = (process.env.SIDECAR_WRITEBACK_URL ?? '').trim().replace(/\/$/, '')
+  const normalizedOriginPath = parsed.origin + parsed.pathname.replace(/\/$/, '')
+  if (isHostedCloud && isPrivateOrLoopback && (!configuredSidecar || normalizedOriginPath !== configuredSidecar)) {
+    throw new Error('Sidecar URL blocked: private or loopback addresses are not allowed on hosted MCP')
+  }
+  return normalizedOriginPath
 }
 
 async function connectFetch<T>(
@@ -95,7 +194,8 @@ async function ultraFetch<T>(path: string, init?: RequestInit): Promise<T> {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${key}`,
       ...(init?.headers ?? {})
-    }
+    },
+    signal: init?.signal ?? AbortSignal.timeout(30_000)
   })
   if (!res.ok) {
     throw new Error(`hebrah-api ${path} failed (${res.status}): ${await res.text()}`)
@@ -151,10 +251,15 @@ export const AGENT_TOOL_NAMES = [
   'get_usage_forecast',
   'env_list',
   'env_create',
+  'env_connect',
   'env_get',
+  'env_list_tables',
   'env_query_db',
+  'env_record_outcome',
   'env_trigger_scenario',
+  'env_list_patients',
   'env_get_patient_chart',
+  'env_get_logs',
   'env_pause',
   'env_resume'
 ] as const
@@ -221,11 +326,23 @@ export const agentToolDefinitions = [
       required: ['name'],
       properties: {
         name: { type: 'string', description: 'Environment name (e.g. Pediatrics Testing)' },
-        clinic_type: { type: 'string', enum: ['ambulatory', 'hospital', 'cardiology'], description: 'Clinic template (default: ambulatory)' },
-        patient_cohort: { type: 'string', enum: ['general', 'geriatric', 'pediatric', 'cardiac'], description: 'Synthetic patient cohort (default: geriatric)' },
+        clinic_type: { type: 'string', enum: ['ambulatory', 'hospital', 'cardiology', 'ambulatory_clinic', 'hospital_system', 'cardiology_center'], description: 'Clinic template (default: ambulatory)' },
+        patient_cohort: { type: 'string', enum: ['general', 'geriatric', 'pediatric', 'cardiac', 'mixed'], description: 'Synthetic patient cohort (default: geriatric)' },
         addons: { type: 'array', items: { type: 'string' }, description: 'Database pack modules to attach (postgres, sqlite, vectordb, neo4j)' },
         patient_count: { type: 'number', description: 'Initial patient pool size (10-1000, default: 25)' },
         bed_count: { type: 'number', description: 'Inpatient bed capacity (0-200, default: 40)' }
+      }
+    }
+  },
+  {
+    name: 'env_connect',
+    description: 'Connect this AI agent session to an existing isolated health environment, register in Connected Agents, and set active session context',
+    inputSchema: {
+      type: 'object',
+      required: ['environment_id'],
+      properties: {
+        environment_id: { type: 'string', description: 'Environment ID to connect to (e.g. 4e39cc5c-...)' },
+        agent_name: { type: 'string', description: 'Optional display name for this agent in the Connected Agents table' }
       }
     }
   },
@@ -234,9 +351,18 @@ export const agentToolDefinitions = [
     description: 'Get details, connection endpoints, and database module status for an isolated environment',
     inputSchema: {
       type: 'object',
-      required: ['environment_id'],
       properties: {
-        environment_id: { type: 'string', description: 'Environment ID (e.g. env_ambulatory_...)' }
+        environment_id: { type: 'string', description: 'Environment ID (defaults to active session environment)' }
+      }
+    }
+  },
+  {
+    name: 'env_list_tables',
+    description: 'Inspect all database tables, live row counts, and column schemas in the environment isolated database',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        environment_id: { type: 'string', description: 'Environment ID (defaults to active session environment)' }
       }
     }
   },
@@ -250,6 +376,23 @@ export const agentToolDefinitions = [
         environment_id: { type: 'string', description: 'Environment ID (defaults to active session environment)' },
         sql: { type: 'string', description: 'Read-only SQL query to execute' },
         addon: { type: 'string', enum: ['postgres', 'sqlite'], description: 'Target database addon (default: postgres)' }
+      }
+    }
+  },
+  {
+    name: 'env_record_outcome',
+    description: 'Persist a structured AI agent clinical finding or outcome into the environment app_outcomes table (protected by inbound DLP filter)',
+    inputSchema: {
+      type: 'object',
+      required: ['outcome_type', 'summary'],
+      properties: {
+        environment_id: { type: 'string', description: 'Environment ID (defaults to active session environment)' },
+        outcome_type: { type: 'string', description: 'Clinical outcome category (e.g. sepsis_risk_alert, care_gap_closed, triage_recommendation)' },
+        summary: { type: 'string', description: 'Human-readable summary of the clinical finding or outcome' },
+        patient_id: { type: 'string', description: 'Target synthetic patient ID (e.g. pat-4e39-001)' },
+        score: { type: 'number', description: 'Optional numeric risk or confidence score' },
+        source_agent: { type: 'string', description: 'Optional agent identifier attribution' },
+        payload: { type: 'object', description: 'Optional structured JSON metadata for the outcome' }
       }
     }
   },
@@ -268,6 +411,17 @@ export const agentToolDefinitions = [
     }
   },
   {
+    name: 'env_list_patients',
+    description: 'List synthetic patients in the environment EHR with demographics and active status',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        environment_id: { type: 'string', description: 'Environment ID (defaults to active session environment)' },
+        limit: { type: 'number', description: 'Maximum number of patients to return (1-200, default: 50)' }
+      }
+    }
+  },
+  {
     name: 'env_get_patient_chart',
     description: 'Retrieve a complete synthetic patient chart (demographics, conditions, medications, vitals, lab results, encounters)',
     inputSchema: {
@@ -276,6 +430,18 @@ export const agentToolDefinitions = [
       properties: {
         environment_id: { type: 'string', description: 'Environment ID (defaults to active session environment)' },
         patient_id: { type: 'string', description: 'Patient ID (e.g. pat_001)' }
+      }
+    }
+  },
+  {
+    name: 'env_get_logs',
+    description: 'Retrieve tamper-evident activity and audit logs for the isolated health environment',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        environment_id: { type: 'string', description: 'Environment ID (defaults to active session environment)' },
+        limit: { type: 'number', description: 'Maximum number of log entries to return (1-200, default: 50)' },
+        event_type: { type: 'string', description: 'Optional filter by event_type (e.g. db_query, db_write, scenario_triggered, agent.connected)' }
       }
     }
   },
@@ -321,13 +487,14 @@ function revokeConfirmationTarget(connectionId: string, keyId: string): string {
 function consumeCredentialConfirmation(
   args: Record<string, unknown>,
   action: ConfirmationAction,
-  targetId: string
+  targetId: string,
+  orgId = ''
 ): void {
   const intent = String(args.humanIntentMessage ?? '')
   if (!intent.trim()) {
     throw new Error(`humanIntentMessage required for ${action}`)
   }
-  consumeConfirmationToken(String(args.confirmationToken ?? ''), action, targetId)
+  consumeConfirmationToken(String(args.confirmationToken ?? ''), action, targetId, orgId)
 }
 
 async function dashboardFetch<T>(pat: string, path: string, init?: RequestInit): Promise<T> {
@@ -337,7 +504,8 @@ async function dashboardFetch<T>(pat: string, path: string, init?: RequestInit):
       'Content-Type': 'application/json',
       Authorization: `Bearer ${pat}`,
       ...(init?.headers ?? {})
-    }
+    },
+    signal: init?.signal ?? AbortSignal.timeout(30_000)
   })
   if (!res.ok) {
     throw new Error(`Dashboard ${path} failed (${res.status}): ${await res.text()}`)
@@ -346,7 +514,7 @@ async function dashboardFetch<T>(pat: string, path: string, init?: RequestInit):
 }
 
 export const bootstrapToolDefinitions = [
-  { name: 'create_account', description: 'Create a Hebrah agent account headlessly — $1 trial credit, 100 queries, 5 MB egress, 7 days, no card. Available only when ALLOW_HEADLESS_SIGNUP=true' }
+  { name: 'create_account', description: 'Create a Hebrah agent account headlessly — $5.00 free credit, 1,000 queries, 50 MB egress, 14 days, no card. Available only when ALLOW_HEADLESS_SIGNUP=true' }
 ]
 
 export const toolDefinitions = [
@@ -414,10 +582,15 @@ export const toolDefinitions = [
   { name: 'get_sdk_reference', description: 'Official @hebrah/sdk (Node) reference — install, API surface, MCP-to-SDK mapping. Do not web-search npm.' },
   { name: 'env_list', description: 'List isolated health environments for this organization' },
   { name: 'env_create', description: 'Provision a new isolated clinic health environment with synthetic EHR and attachable database modules' },
+  { name: 'env_connect', description: 'Connect this session to an existing isolated health environment and set active environment context' },
   { name: 'env_get', description: 'Get details, connection endpoints, and database module status for an isolated environment' },
+  { name: 'env_list_tables', description: 'Inspect all database tables, live row counts, and column schemas in the environment isolated database' },
   { name: 'env_query_db', description: 'Execute a read-only SQL query against an environment database module via credential-blind proxy' },
+  { name: 'env_record_outcome', description: 'Persist a structured clinical finding or outcome into the environment app_outcomes table (protected by inbound DLP filter)' },
   { name: 'env_trigger_scenario', description: 'Trigger a synthetic clinical workflow scenario with live HL7 WebSocket alerts' },
+  { name: 'env_list_patients', description: 'List synthetic patients in the environment EHR' },
   { name: 'env_get_patient_chart', description: 'Retrieve a complete synthetic patient chart' },
+  { name: 'env_get_logs', description: 'Retrieve tamper-evident activity and audit logs for the isolated health environment' },
   { name: 'env_pause', description: 'Pause an environment to suspend compute and reduce hourly rate to $0.00/hr' },
   { name: 'env_resume', description: 'Resume a paused environment and restore compute services' }
 ]
@@ -470,33 +643,38 @@ export async function callTool(
         }
       }
       case 'query_data_source': {
-        const connectionId = String(args.connectionId ?? session.connectConnectionId ?? '')
+        const rawId = String(args.connectionId ?? session.connectConnectionId ?? '').trim()
+        if (!rawId) throw new Error('connectionId is required; call connect_to_data_source first')
+        const connectionId = safeId(rawId, 'connectionId')
         const sql = String(args.sql ?? '')
-        if (!connectionId) throw new Error('connectionId is required; call connect_to_data_source first')
         if (!sql.trim()) throw new Error('sql is required')
-        return agentApiFetch(auth, `/v1/connections/${encodeURIComponent(connectionId)}/query`, {
+        return agentApiFetch(auth, `/v1/connections/${connectionId}/query`, {
           method: 'POST',
           body: JSON.stringify({ sql })
         })
       }
       case 'get_data_source_audit': {
-        const connectionId = String(args.connectionId ?? session.connectConnectionId ?? '')
-        if (!connectionId) throw new Error('connectionId is required; call connect_to_data_source first')
-        return agentApiFetch(auth, `/v1/connections/${encodeURIComponent(connectionId)}/audit`)
+        const rawId = String(args.connectionId ?? session.connectConnectionId ?? '').trim()
+        if (!rawId) throw new Error('connectionId is required; call connect_to_data_source first')
+        const connectionId = safeId(rawId, 'connectionId')
+        return agentApiFetch(auth, `/v1/connections/${connectionId}/audit`)
       }
       case 'get_connect_usage':
         return agentApiFetch(auth, '/v1/agent/account/usage')
       case 'get_wallet_status':
         return agentApiFetch(auth, '/v1/agent/wallet')
       case 'set_auto_reload': {
-        const enabled = Boolean(args.autoReloadEnabled)
+        const rawEnabled = args.auto_reload_enabled ?? args.autoReloadEnabled
+        const enabled = Boolean(rawEnabled)
+        const threshold = args.auto_reload_threshold_cents ?? args.autoReloadThresholdCents
+        const amount = args.auto_reload_amount_cents ?? args.autoReloadAmountCents
         const body: Record<string, unknown> = { auto_reload_enabled: enabled }
-        if (args.autoReloadThresholdCents !== undefined) body.auto_reload_threshold_cents = args.autoReloadThresholdCents
-        if (args.autoReloadAmountCents !== undefined) body.auto_reload_amount_cents = args.auto_reload_amount_cents ?? args.autoReloadAmountCents
+        if (threshold !== undefined) body.auto_reload_threshold_cents = Number(threshold)
+        if (amount !== undefined) body.auto_reload_amount_cents = Number(amount)
         return agentApiFetch(auth, '/v1/agent/wallet/config', { method: 'POST', body: JSON.stringify(body) })
       }
       case 'create_topup': {
-        const amountCents = Number(args.amount_cents ?? 2000)
+        const amountCents = Number(args.amount_cents ?? args.amountCents ?? 2000)
         if (!amountCents || amountCents < 100) throw new Error('amount_cents must be >= 100 ($1)')
         if (amountCents > 1_000_000) throw new Error('amount_cents must be <= 1,000,000 ($10,000)')
         return agentApiFetch(auth, '/v1/agent/topup', { method: 'POST', body: JSON.stringify({ amount_cents: amountCents }) })
@@ -504,14 +682,15 @@ export async function callTool(
       case 'get_usage_forecast':
         return agentApiFetch(auth, '/v1/agent/wallet')
       case 'revoke_data_source_connection': {
-        const connectionId = String(args.connectionId ?? session.connectConnectionId ?? '')
-        if (!connectionId) throw new Error('connectionId is required; call connect_to_data_source first')
+        const rawId = String(args.connectionId ?? session.connectConnectionId ?? '').trim()
+        if (!rawId) throw new Error('connectionId is required; call connect_to_data_source first')
+        const encodedId = safeId(rawId, 'connectionId')
         const result = await agentApiFetch<{ connectionId: string, status: string }>(
           auth,
-          `/v1/connections/${encodeURIComponent(connectionId)}/revoke`,
+          `/v1/connections/${encodedId}/revoke`,
           { method: 'POST' }
         )
-        if (session.connectConnectionId === connectionId) {
+        if (session.connectConnectionId === rawId) {
           delete session.connectConnectionId
         }
         return {
@@ -544,53 +723,140 @@ export async function callTool(
         }
         return result
       }
+      case 'env_connect': {
+        const rawEnvId = String(args.environment_id ?? args.environmentId ?? '').trim()
+        if (!rawEnvId) throw new Error('environment_id is required for env_connect')
+        const encodedEnvId = safeId(rawEnvId, 'environment_id')
+        const body: Record<string, unknown> = {
+          client: String(args.client ?? 'hebrah-mcp-host').trim() || 'hebrah-mcp-host'
+        }
+        if (args.agent_name ?? args.agentName) {
+          body.agent_name = String(args.agent_name ?? args.agentName).trim()
+        }
+        const result = await agentApiFetch<Record<string, unknown>>(
+          auth,
+          `/v1/environments/${encodedEnvId}/agents/connect`,
+          {
+            method: 'POST',
+            body: JSON.stringify(body)
+          }
+        )
+        session.activeEnvironmentId = rawEnvId
+        return {
+          ...result,
+          activeEnvironmentId: rawEnvId,
+          note: 'Agent session connected and registered in Connected Agents. Subsequent env_* tools will default to this environment.'
+        }
+      }
       case 'env_get': {
-        const envId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
-        if (!envId) throw new Error('environment_id is required; call env_create or env_list first')
-        return agentApiFetch(auth, `/v1/environments/${encodeURIComponent(envId)}`)
+        const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
+        if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
+        const encodedEnvId = safeId(rawEnvId, 'environment_id')
+        if (!session.activeEnvironmentId) {
+          session.activeEnvironmentId = rawEnvId
+        }
+        return agentApiFetch(auth, `/v1/environments/${encodedEnvId}`)
+      }
+      case 'env_list_tables': {
+        const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
+        if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
+        const encodedEnvId = safeId(rawEnvId, 'environment_id')
+        return agentApiFetch(auth, `/v1/environments/${encodedEnvId}/db/tables`)
       }
       case 'env_query_db': {
-        const envId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
-        if (!envId) throw new Error('environment_id is required; call env_create or env_list first')
+        const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
+        if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
+        const encodedEnvId = safeId(rawEnvId, 'environment_id')
         const sql = String(args.sql ?? args.query ?? '').trim()
         if (!sql) throw new Error('sql is required')
         const addon = String(args.addon ?? args.pack ?? 'postgres').trim()
-        return agentApiFetch(auth, `/v1/environments/${encodeURIComponent(envId)}/db/query`, {
+        return agentApiFetch(auth, `/v1/environments/${encodedEnvId}/db/query`, {
           method: 'POST',
           body: JSON.stringify({ sql, addon, actor_type: 'agent' })
         })
       }
+      case 'env_record_outcome': {
+        const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
+        if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
+        const encodedEnvId = safeId(rawEnvId, 'environment_id')
+        const outcomeType = String(args.outcome_type ?? args.outcomeType ?? '').trim()
+        if (!outcomeType) throw new Error('outcome_type is required')
+        const summary = String(args.summary ?? '').trim()
+        if (!summary) throw new Error('summary is required')
+        const body: Record<string, unknown> = {
+          outcome_type: outcomeType,
+          summary
+        }
+        if (args.patient_id ?? args.patientId) body.patient_id = String(args.patient_id ?? args.patientId).trim()
+        if (args.score !== undefined || args.risk_score !== undefined) {
+          body.score = Number(args.score ?? args.risk_score)
+        }
+        if (args.source_agent ?? args.sourceAgent) {
+          body.source_agent = String(args.source_agent ?? args.sourceAgent).trim()
+        }
+        if (args.payload && typeof args.payload === 'object') {
+          body.payload = args.payload
+        }
+        return agentApiFetch(auth, `/v1/environments/${encodedEnvId}/db/outcomes`, {
+          method: 'POST',
+          body: JSON.stringify(body)
+        })
+      }
       case 'env_trigger_scenario': {
-        const envId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
-        if (!envId) throw new Error('environment_id is required; call env_create or env_list first')
+        const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
+        if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
+        const encodedEnvId = safeId(rawEnvId, 'environment_id')
         const scenario = String(args.scenario ?? args.scenario_id ?? args.scenarioId ?? '').trim()
         if (!scenario) throw new Error('scenario is required (e.g. er_arrival, lab_critical, discharge, code_blue)')
         const body: Record<string, unknown> = { scenario }
         if (args.patient_id ?? args.patientId) body.patient_id = String(args.patient_id ?? args.patientId)
         if (args.notes) body.notes = String(args.notes)
-        return agentApiFetch(auth, `/v1/environments/${encodeURIComponent(envId)}/ehr/scenarios/trigger`, {
+        return agentApiFetch(auth, `/v1/environments/${encodedEnvId}/ehr/scenarios/trigger`, {
           method: 'POST',
           body: JSON.stringify(body)
         })
       }
+      case 'env_list_patients': {
+        const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
+        if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
+        const encodedEnvId = safeId(rawEnvId, 'environment_id')
+        const params = new URLSearchParams()
+        if (args.limit != null) params.set('limit', String(Number(args.limit)))
+        const qs = params.toString() ? `?${params.toString()}` : ''
+        return agentApiFetch(auth, `/v1/environments/${encodedEnvId}/ehr/patients${qs}`)
+      }
       case 'env_get_patient_chart': {
-        const envId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
-        if (!envId) throw new Error('environment_id is required; call env_create or env_list first')
-        const patientId = String(args.patient_id ?? args.patientId ?? '').trim()
-        if (!patientId) throw new Error('patient_id is required (e.g. pat_001)')
-        return agentApiFetch(auth, `/v1/environments/${encodeURIComponent(envId)}/ehr/patients/${encodeURIComponent(patientId)}`)
+        const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
+        if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
+        const encodedEnvId = safeId(rawEnvId, 'environment_id')
+        const rawPatientId = String(args.patient_id ?? args.patientId ?? '').trim()
+        if (!rawPatientId) throw new Error('patient_id is required (e.g. pat_001)')
+        const encodedPatientId = safeId(rawPatientId, 'patient_id')
+        return agentApiFetch(auth, `/v1/environments/${encodedEnvId}/ehr/patients/${encodedPatientId}`)
+      }
+      case 'env_get_logs': {
+        const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
+        if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
+        const encodedEnvId = safeId(rawEnvId, 'environment_id')
+        const params = new URLSearchParams()
+        if (args.limit != null) params.set('limit', String(Number(args.limit)))
+        if (args.event_type ?? args.eventType) params.set('event_type', String(args.event_type ?? args.eventType).trim())
+        const qs = params.toString() ? `?${params.toString()}` : ''
+        return agentApiFetch(auth, `/v1/environments/${encodedEnvId}/logs${qs}`)
       }
       case 'env_pause': {
-        const envId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
-        if (!envId) throw new Error('environment_id is required; call env_create or env_list first')
-        return agentApiFetch(auth, `/v1/environments/${encodeURIComponent(envId)}/pause`, {
+        const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
+        if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
+        const encodedEnvId = safeId(rawEnvId, 'environment_id')
+        return agentApiFetch(auth, `/v1/environments/${encodedEnvId}/pause`, {
           method: 'POST'
         })
       }
       case 'env_resume': {
-        const envId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
-        if (!envId) throw new Error('environment_id is required; call env_create or env_list first')
-        return agentApiFetch(auth, `/v1/environments/${encodeURIComponent(envId)}/resume`, {
+        const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
+        if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
+        const encodedEnvId = safeId(rawEnvId, 'environment_id')
+        return agentApiFetch(auth, `/v1/environments/${encodedEnvId}/resume`, {
           method: 'POST'
         })
       }
@@ -638,7 +904,7 @@ export async function callTool(
       const hasClaim = Boolean(claimUrl && invite && !invite.endsWith('@agent.local'))
 
       let markdown = `### 🎉 Hebrah Account Created for **${orgName}**\n\n` +
-        `Your workspace is provisioned with **$1.00 trial credit** (100 queries, 5 MB egress, 7 days).\n\n` +
+        `Your workspace is provisioned with **$5.00 free credit** (1,000 queries, 50 MB egress, 14 days).\n\n` +
         `- **API Key:** \`${data.apiKey}\` *(save this key now — it is shown once)*\n` +
         `- **MCP Endpoint:** \`${data.mcpEndpointUrl}\`\n\n`
 
@@ -660,7 +926,7 @@ export async function callTool(
         inviteEmail: hasClaim ? invite : null,
         trial: data.trial,
         markdown,
-        note: `Agent account created — $1 trial credit (100 queries, 5 MB egress, 7 days). ` +
+        note: `Agent account created — $5.00 free credit (1,000 queries, 50 MB egress, 14 days). ` +
           `Save the apiKey (${data.keyPrefix}…) now — it is shown once. ` +
           (hasClaim ? `Claim the organization at ${claimUrl} to attach billing. ` : '') +
           'Reconnect to this MCP server with "Authorization: Bearer <apiKey>" to use the connection tools, or call the agent API directly.'
@@ -675,7 +941,7 @@ export async function callTool(
       if (!Array.isArray(rawScopes) || rawScopes.length === 0 || rawScopes.some(scope => typeof scope !== 'string')) {
         throw new Error('scopes must be a non-empty string array from the target discovery metadata')
       }
-      consumeCredentialConfirmation(args, 'connect_to_data_source', target)
+      consumeCredentialConfirmation(args, 'connect_to_data_source', target, auth.orgId)
       const result = await connectFetch<{ connection_id: string, target: string, scopes: string[], tier: string, expires_at: string }>(
         auth,
         session,
@@ -702,7 +968,7 @@ export async function callTool(
       const sql = String(args.sql ?? '')
       if (!connectionId) throw new Error('connectionId is required; call connect_to_data_source first')
       if (!sql.trim()) throw new Error('sql is required')
-      return connectFetch(auth, session, `/v1/connections/${encodeURIComponent(connectionId)}/query`, {
+      return connectFetch(auth, session, `/v1/connections/${safeId(connectionId, 'connectionId')}/query`, {
         method: 'POST',
         body: JSON.stringify({ sql })
       })
@@ -710,18 +976,18 @@ export async function callTool(
     case 'get_data_source_audit': {
       const connectionId = String(args.connectionId ?? session.connectConnectionId ?? '')
       if (!connectionId) throw new Error('connectionId is required; call connect_to_data_source first')
-      return connectFetch(auth, session, `/v1/connections/${encodeURIComponent(connectionId)}/audit`)
+      return connectFetch(auth, session, `/v1/connections/${safeId(connectionId, 'connectionId')}/audit`)
     }
     case 'get_connect_usage':
       return connectFetch(auth, session, '/v1/account/usage')
     case 'revoke_data_source_connection': {
       const connectionId = String(args.connectionId ?? session.connectConnectionId ?? '')
       if (!connectionId) throw new Error('connectionId is required; call connect_to_data_source first')
-      consumeCredentialConfirmation(args, 'revoke_data_source_connection', connectionId)
+      consumeCredentialConfirmation(args, 'revoke_data_source_connection', connectionId, auth.orgId)
       const result = await connectFetch<{ connection_id: string, status: string }>(
         auth,
         session,
-        `/v1/connections/${encodeURIComponent(connectionId)}/revoke`,
+        `/v1/connections/${safeId(connectionId, 'connectionId')}/revoke`,
         { method: 'POST' }
       )
       if (session.connectConnectionId === connectionId) session.connectConnectionId = undefined
@@ -783,7 +1049,7 @@ export async function callTool(
       if (!id) {
         throw new Error('connectionId is required for pause_connection')
       }
-      return dashboardFetch(auth.pat, `/api/connections/${encodeURIComponent(id)}/pause`, {
+      return dashboardFetch(auth.pat, `/api/connections/${safeId(id, 'connectionId')}/pause`, {
         method: 'PATCH'
       })
     }
@@ -793,7 +1059,7 @@ export async function callTool(
       if (!id) {
         throw new Error('connectionId is required for resume_connection')
       }
-      return dashboardFetch(auth.pat, `/api/connections/${encodeURIComponent(id)}/resume`, {
+      return dashboardFetch(auth.pat, `/api/connections/${safeId(id, 'connectionId')}/resume`, {
         method: 'PATCH'
       })
     }
@@ -808,10 +1074,10 @@ export async function callTool(
       if (!intent.trim()) {
         throw new Error('humanIntentMessage required to remove a connection')
       }
-      consumeConfirmationToken(token, 'remove_connection', id)
+      consumeConfirmationToken(token, 'remove_connection', id, auth.orgId)
       const result = await dashboardFetch<{ removedConnectionIds: string[] }>(
         auth.pat,
-        `/api/connections/${encodeURIComponent(id)}`,
+        `/api/connections/${safeId(id, 'connectionId')}`,
         { method: 'DELETE' }
       )
       if (session.activeConnectionId && result.removedConnectionIds.includes(session.activeConnectionId)) {
@@ -821,22 +1087,22 @@ export async function callTool(
     }
     case 'get_connection_mapping': {
       const id = String(args.connectionId ?? session.activeConnectionId ?? '')
-      return dashboardFetch(auth.pat, `/api/connections/${encodeURIComponent(id)}/mapping`)
+      return dashboardFetch(auth.pat, `/api/connections/${safeId(id, 'connectionId')}/mapping`)
     }
     case 'update_connection_mapping': {
       const id = String(args.connectionId ?? session.activeConnectionId ?? '')
-      return dashboardFetch(auth.pat, `/api/connections/${encodeURIComponent(id)}/mapping`, {
+      return dashboardFetch(auth.pat, `/api/connections/${safeId(id, 'connectionId')}/mapping`, {
         method: 'PUT',
         body: JSON.stringify({ mappings: args.mappings })
       })
     }
     case 'list_config_versions': {
       const id = String(args.connectionId ?? session.activeConnectionId ?? '')
-      return dashboardFetch(auth.pat, `/api/connections/${encodeURIComponent(id)}/versions`)
+      return dashboardFetch(auth.pat, `/api/connections/${safeId(id, 'connectionId')}/versions`)
     }
     case 'create_config_version': {
       const id = String(args.connectionId ?? session.activeConnectionId ?? '')
-      return dashboardFetch(auth.pat, `/api/connections/${encodeURIComponent(id)}/versions`, {
+      return dashboardFetch(auth.pat, `/api/connections/${safeId(id, 'connectionId')}/versions`, {
         method: 'POST',
         body: JSON.stringify({ source: 'mcp' })
       })
@@ -844,7 +1110,7 @@ export async function callTool(
     case 'create_promotion': {
       await assertPromoteToLiveAllowed(auth.pat)
       const id = String(args.connectionId ?? session.activeConnectionId ?? '')
-      return dashboardFetch(auth.pat, `/api/connections/${encodeURIComponent(id)}/promotions`, {
+      return dashboardFetch(auth.pat, `/api/connections/${safeId(id, 'connectionId')}/promotions`, {
         method: 'POST',
         body: JSON.stringify({
           toVersionId: args.toVersionId,
@@ -860,7 +1126,7 @@ export async function callTool(
       const prId = String(args.promotionId ?? '')
       return dashboardFetch(
         auth.pat,
-        `/api/connections/${encodeURIComponent(connId)}/promotions/${encodeURIComponent(prId)}`
+        `/api/connections/${safeId(connId, 'connectionId')}/promotions/${safeId(prId, 'promotionId')}`
       )
     }
     case 'confirm_action': {
@@ -887,7 +1153,7 @@ export async function callTool(
           targetId = revokeConfirmationTarget(connectionId, keyId)
         }
 
-        const token = issueConfirmationToken(credentialAction, targetId)
+        const token = issueConfirmationToken(credentialAction, targetId, auth.orgId)
         return {
           confirmationToken: token,
           expiresInSeconds: 300,
@@ -905,7 +1171,7 @@ export async function callTool(
         if (!connectionId) {
           throw new Error('connectionId required for confirm_action(remove_connection)')
         }
-        const token = issueConfirmationToken('remove_connection', connectionId)
+        const token = issueConfirmationToken('remove_connection', connectionId, auth.orgId)
         return {
           confirmationToken: token,
           expiresInSeconds: 300,
@@ -922,7 +1188,7 @@ export async function callTool(
           'promotionId required for confirm_action(approve_promotion), or pass action with connectionId for credential writes or remove_connection'
         )
       }
-      const token = issueConfirmationToken('approve_promotion', promotionId)
+      const token = issueConfirmationToken('approve_promotion', promotionId, auth.orgId)
       return {
         confirmationToken: token,
         expiresInSeconds: 300,
@@ -940,11 +1206,11 @@ export async function callTool(
       if (!intent.trim()) {
         throw new Error('humanIntentMessage required to approve a Live promotion')
       }
-      consumeConfirmationToken(token, 'approve_promotion', prId)
+      consumeConfirmationToken(token, 'approve_promotion', prId, auth.orgId)
       await checkPromotionApproveLimit(auth.orgId)
       return dashboardFetch(
         auth.pat,
-        `/api/connections/${encodeURIComponent(connId)}/promotions/${encodeURIComponent(prId)}/approve`,
+        `/api/connections/${safeId(connId, 'connectionId')}/promotions/${safeId(prId, 'promotionId')}/approve`,
         { method: 'POST', body: JSON.stringify({ humanIntentMessage: intent }) }
       )
     }
@@ -954,13 +1220,13 @@ export async function callTool(
       const prId = String(args.promotionId ?? '')
       return dashboardFetch(
         auth.pat,
-        `/api/connections/${encodeURIComponent(connId)}/promotions/${encodeURIComponent(prId)}/reject`,
+        `/api/connections/${safeId(connId, 'connectionId')}/promotions/${safeId(prId, 'promotionId')}/reject`,
         { method: 'POST', body: JSON.stringify({ comment: args.comment }) }
       )
     }
     case 'get_live_deployment': {
       const id = String(args.connectionId ?? session.activeConnectionId ?? '')
-      return dashboardFetch(auth.pat, `/api/connections/${encodeURIComponent(id)}/deployment`)
+      return dashboardFetch(auth.pat, `/api/connections/${safeId(id, 'connectionId')}/deployment`)
     }
     case 'get_sandbox_catalog': {
       const connectionId = args.connectionId ?? session.activeConnectionId
@@ -990,14 +1256,14 @@ export async function callTool(
     case 'list_sandbox_domains':
       return ultraFetch('/v1/sandbox/domains')
     case 'get_sandbox_domain':
-      return ultraFetch(`/v1/sandbox/domains/${encodeURIComponent(String(args.domainId ?? args.domain_id ?? ''))}`)
+      return ultraFetch(`/v1/sandbox/domains/${safeId(String(args.domainId ?? args.domain_id ?? ''), 'domainId')}`)
     case 'get_synthetic_resource': {
       const resourceType = String(args.resourceType ?? args.resource_type ?? '')
       const resourceId = String(args.resourceId ?? args.resource_id ?? '')
       const patientId = args.patientId ?? args.patient_id
       const q = patientId ? `?patient_id=${encodeURIComponent(String(patientId))}` : ''
       return ultraFetch(
-        `/v1/sandbox/resources/${encodeURIComponent(resourceType)}/${encodeURIComponent(resourceId)}${q}`
+        `/v1/sandbox/resources/${safeId(resourceType, 'resourceType')}/${safeId(resourceId, 'resourceId')}${q}`
       )
     }
     case 'run_sandbox_scenario': {
@@ -1012,13 +1278,13 @@ export async function callTool(
       if (args.delay_seconds !== undefined || args.delaySeconds !== undefined) {
         body.delay_seconds = args.delay_seconds ?? args.delaySeconds
       }
-      return ultraFetch(`/v1/sandbox/scenarios/${encodeURIComponent(scenarioId)}/run`, {
+      return ultraFetch(`/v1/sandbox/scenarios/${safeId(scenarioId, 'scenarioId')}/run`, {
         method: 'POST',
         body: JSON.stringify(body)
       })
     }
     case 'get_payer_rules':
-      return ultraFetch(`/v1/sandbox/payer-rules/${encodeURIComponent(String(args.payerId ?? args.payer_id ?? 'payer_aetna'))}`)
+      return ultraFetch(`/v1/sandbox/payer-rules/${safeId(String(args.payerId ?? args.payer_id ?? 'payer_aetna'), 'payerId')}`)
     case 'list_sandbox_events': {
       const catalog = await ultraFetch<{ event_groups?: Record<string, string[]> }>('/v1/sandbox/catalog')
       return catalog.event_groups ?? {}
@@ -1053,11 +1319,14 @@ export async function callTool(
       if (!url) {
         throw new Error('url argument or SIDECAR_WRITEBACK_URL env required for sidecar_writeback')
       }
-      const action = String(args.action ?? 'chart-note')
-      const endpoint = `${url.replace(/\/$/, '')}/v1/writeback/${action}`
+      const safeBaseUrl = assertSafeSidecarUrl(url)
+      const action = safeId(String(args.action ?? 'chart-note'), 'action')
+      const endpoint = `${safeBaseUrl}/v1/writeback/${action}`
       const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        redirect: 'error',
+        signal: AbortSignal.timeout(15_000),
         body: JSON.stringify({
           patient_id: args.patient_id ?? args.patientId ?? 'pat_00000000_01',
           ...(typeof args.body === 'object' && args.body ? args.body : {})
@@ -1079,9 +1348,10 @@ export async function callTool(
         throw new Error('ORCHESTRATOR_SECRET required on hebrah-mcp-host for run_hl7_flight_check')
       }
       const orchUrl = config.orchestratorUrl
-      const res = await fetch(`${orchUrl}/v1/vms/${encodeURIComponent(vmId)}/hl7-probe`, {
+      const res = await fetch(`${orchUrl}/v1/vms/${safeId(vmId, 'vmId')}/hl7-probe`, {
         method: 'POST',
-        headers: { 'X-Orchestrator-Secret': secret }
+        headers: { 'X-Orchestrator-Secret': secret },
+        signal: AbortSignal.timeout(15_000)
       })
       if (!res.ok) {
         throw new Error(`hl7-probe failed (${res.status}): ${await res.text()}`)
@@ -1100,7 +1370,7 @@ export async function callTool(
     case 'replay_webhook_delivery': {
       const deliveryId = String(args.delivery_id ?? args.deliveryId ?? '')
       if (!deliveryId) throw new Error('deliveryId required')
-      return ultraFetch(`/v1/webhooks/deliveries/${encodeURIComponent(deliveryId)}/replay`, {
+      return ultraFetch(`/v1/webhooks/deliveries/${safeId(deliveryId, 'deliveryId')}/replay`, {
         method: 'POST'
       })
     }
@@ -1127,7 +1397,7 @@ export async function callTool(
         patient_id: args.patient_id ?? args.patientId ?? 'pat_00000000_01'
       }
       if (connectionId) body.connection_id = connectionId
-      return ultraFetch(`/v1/sandbox/scenarios/${encodeURIComponent(scenarioId)}/run`, {
+      return ultraFetch(`/v1/sandbox/scenarios/${safeId(scenarioId, 'scenarioId')}/run`, {
         method: 'POST',
         body: JSON.stringify(body)
       })
@@ -1167,7 +1437,7 @@ export async function callTool(
       }
       const connectionId = args.connection_id ?? args.connectionId ?? session.activeConnectionId
       if (connectionId) body.connection_id = connectionId
-      return ultraFetch(`/v1/sandbox/scenarios/${encodeURIComponent(scenarioId)}/run`, {
+      return ultraFetch(`/v1/sandbox/scenarios/${safeId(scenarioId, 'scenarioId')}/run`, {
         method: 'POST',
         body: JSON.stringify(body)
       })
@@ -1178,7 +1448,7 @@ export async function callTool(
       if (args.include_role === false) params.set('include_role', 'false')
       if (args.include_verification === false) params.set('include_verification', 'false')
       const q = params.toString() ? `?${params.toString()}` : ''
-      return ultraFetch(`/v1/sandbox/credentialing/practitioners/${encodeURIComponent(practitionerId)}${q}`)
+      return ultraFetch(`/v1/sandbox/credentialing/practitioners/${safeId(practitionerId, 'practitionerId')}${q}`)
     }
     case 'run_credentialing_scenario': {
       const scenarioId = String(args.scenarioId ?? args.scenario_id ?? 'credentialing_verify_practitioner')
@@ -1187,7 +1457,7 @@ export async function callTool(
       }
       const connectionId = args.connection_id ?? args.connectionId ?? session.activeConnectionId
       if (connectionId) body.connection_id = connectionId
-      return ultraFetch(`/v1/sandbox/scenarios/${encodeURIComponent(scenarioId)}/run`, {
+      return ultraFetch(`/v1/sandbox/scenarios/${safeId(scenarioId, 'scenarioId')}/run`, {
         method: 'POST',
         body: JSON.stringify(body)
       })
@@ -1208,7 +1478,7 @@ export async function callTool(
       }
       const connectionId = args.connection_id ?? args.connectionId ?? session.activeConnectionId
       if (connectionId) body.connection_id = connectionId
-      return ultraFetch(`/v1/sandbox/scenarios/${encodeURIComponent(scenarioId)}/run`, {
+      return ultraFetch(`/v1/sandbox/scenarios/${safeId(scenarioId, 'scenarioId')}/run`, {
         method: 'POST',
         body: JSON.stringify(body)
       })
@@ -1229,13 +1499,13 @@ export async function callTool(
       return ultraFetch('/v1/sandbox/research-packs')
     case 'get_research_pack': {
       const packId = String(args.pack_id ?? args.packId ?? 'medicare_utilization_v1')
-      return ultraFetch(`/v1/sandbox/research-packs/${encodeURIComponent(packId)}`)
+      return ultraFetch(`/v1/sandbox/research-packs/${safeId(packId, 'packId')}`)
     }
     case 'apply_research_pack': {
       const packId = String(args.pack_id ?? args.packId ?? 'medicare_utilization_v1')
       const connectionId = args.connection_id ?? args.connectionId ?? session.activeConnectionId
       const q = connectionId ? `?connection_id=${encodeURIComponent(String(connectionId))}` : ''
-      return ultraFetch(`/v1/sandbox/research-packs/${encodeURIComponent(packId)}/apply${q}`, {
+      return ultraFetch(`/v1/sandbox/research-packs/${safeId(packId, 'packId')}/apply${q}`, {
         method: 'POST'
       })
     }
@@ -1243,13 +1513,13 @@ export async function callTool(
       const packId = String(args.pack_id ?? args.packId ?? 'medicare_utilization_v1')
       const connectionId = args.connection_id ?? args.connectionId ?? session.activeConnectionId
       const q = connectionId ? `?connection_id=${encodeURIComponent(String(connectionId))}` : ''
-      return ultraFetch(`/v1/sandbox/research-packs/${encodeURIComponent(packId)}/kpis${q}`)
+      return ultraFetch(`/v1/sandbox/research-packs/${safeId(packId, 'packId')}/kpis${q}`)
     }
     case 'compare_research_pack': {
       const packId = String(args.pack_id ?? args.packId ?? 'medicare_utilization_v1')
       const connectionId = args.connection_id ?? args.connectionId ?? session.activeConnectionId
       const q = connectionId ? `?connection_id=${encodeURIComponent(String(connectionId))}` : ''
-      return ultraFetch(`/v1/sandbox/research-packs/${encodeURIComponent(packId)}/compare${q}`)
+      return ultraFetch(`/v1/sandbox/research-packs/${safeId(packId, 'packId')}/compare${q}`)
     }
     case 'list_ptbxl_ecg_records': {
       const params = new URLSearchParams()
@@ -1265,11 +1535,12 @@ export async function callTool(
     case 'get_ptbxl_ecg_record': {
       const ecgId = args.ecg_id ?? args.ecgId
       if (ecgId == null) throw new Error('ecg_id required for get_ptbxl_ecg_record')
-      return ultraFetch(`/v1/sandbox/research-packs/ptbxl_ecg_v1/records/${encodeURIComponent(String(ecgId))}`)
+      return ultraFetch(`/v1/sandbox/research-packs/ptbxl_ecg_v1/records/${safeId(String(ecgId), 'ecg_id')}`)
     }
     case 'get_ptbxl_ecg_waveform_meta': {
       const ecgId = args.ecg_id ?? args.ecgId
       if (ecgId == null) throw new Error('ecg_id required for get_ptbxl_ecg_waveform_meta')
+      const encodedEcgId = safeId(String(ecgId), 'ecg_id')
       const wave = await ultraFetch<{
         ecg_id?: number
         fs?: number
@@ -1278,7 +1549,7 @@ export async function callTool(
         leads?: Record<string, number[]>
         disclaimer?: string
         attribution?: string
-      }>(`/v1/sandbox/research-packs/ptbxl_ecg_v1/records/${encodeURIComponent(String(ecgId))}/waveform`)
+      }>(`/v1/sandbox/research-packs/ptbxl_ecg_v1/records/${encodedEcgId}/waveform`)
       const preview: Record<string, number[]> = {}
       for (const [lead, samples] of Object.entries(wave.leads || {})) {
         preview[lead] = Array.isArray(samples) ? samples.slice(0, 8) : []
@@ -1293,7 +1564,7 @@ export async function callTool(
           Object.entries(wave.leads || {}).map(([k, v]) => [k, Array.isArray(v) ? v.length : 0])
         ),
         lead_preview_first_8: preview,
-        waveform_path: `/v1/sandbox/research-packs/ptbxl_ecg_v1/records/${encodeURIComponent(String(ecgId))}/waveform`,
+        waveform_path: `/v1/sandbox/research-packs/ptbxl_ecg_v1/records/${encodedEcgId}/waveform`,
         disclaimer: wave.disclaimer,
         attribution: wave.attribution,
         note: 'Full samples omitted for MCP payload size. Use waveform_path via API/UI viewer.'
@@ -1319,7 +1590,7 @@ export async function callTool(
     case 'get_connection_developer_doc': {
       const id = String(args.connectionId ?? args.connection_id ?? session.activeConnectionId ?? '')
       if (!id) throw new Error('connectionId required for get_connection_developer_doc')
-      return dashboardFetch(auth.pat, `/api/connections/${encodeURIComponent(id)}/developer-doc`)
+      return dashboardFetch(auth.pat, `/api/connections/${safeId(id, 'connectionId')}/developer-doc`)
     }
     case 'get_connection_credentials': {
       const connectionId = String(args.connectionId ?? args.connection_id ?? session.activeConnectionId ?? '')
@@ -1334,7 +1605,7 @@ export async function callTool(
 
       const credentials = await dashboardFetch<Record<string, unknown>>(
         auth.pat,
-        `/api/connections/${encodeURIComponent(connectionId)}/credentials${query}`
+        `/api/connections/${safeId(connectionId, 'connectionId')}/credentials${query}`
       )
 
       const urlInput = parseLocalAppUrlFromArgs(args)
@@ -1358,7 +1629,7 @@ export async function callTool(
         throw new Error('connectionId required for set_connection_webhook_url')
       }
 
-      consumeCredentialConfirmation(args, 'set_connection_webhook_url', connectionId)
+      consumeCredentialConfirmation(args, 'set_connection_webhook_url', connectionId, auth.orgId)
 
       const body: Record<string, unknown> = {}
       if (args.inheritDefault === true || args.inherit_default === true) {
@@ -1370,7 +1641,7 @@ export async function callTool(
 
       const result = await dashboardFetch<{
         effective?: { webhookUrl?: string | null }
-      }>(auth.pat, `/api/connections/${encodeURIComponent(connectionId)}/webhook`, {
+      }>(auth.pat, `/api/connections/${safeId(connectionId, 'connectionId')}/webhook`, {
         method: 'POST',
         body: JSON.stringify(body)
       })
@@ -1389,6 +1660,7 @@ export async function callTool(
     case 'propose_custom_ehr_model': {
       const connectionId = String(args.connectionId ?? args.connection_id ?? session.activeConnectionId ?? '')
       if (!connectionId) throw new Error('connectionId required for propose_custom_ehr_model')
+      const encodedConnId = safeId(connectionId, 'connectionId')
       const ingestBody: Record<string, unknown> = {}
       if (args.url) ingestBody.url = String(args.url)
       if (args.text) ingestBody.text = String(args.text)
@@ -1397,12 +1669,12 @@ export async function callTool(
       }
       const ingestJson = await dashboardFetch<{ chunk_id: string }>(
         auth.pat,
-        `/api/connections/${encodeURIComponent(connectionId)}/byom/ingest`,
+        `/api/connections/${encodedConnId}/byom/ingest`,
         { method: 'POST', body: JSON.stringify(ingestBody) }
       )
       const generated = await dashboardFetch<Record<string, unknown>>(
         auth.pat,
-        `/api/connections/${encodeURIComponent(connectionId)}/byom/generate`,
+        `/api/connections/${encodedConnId}/byom/generate`,
         {
           method: 'POST',
           body: JSON.stringify({ docChunkIds: [ingestJson.chunk_id] })
@@ -1416,14 +1688,14 @@ export async function callTool(
     case 'create_sandbox_api_key': {
       const id = String(args.connectionId ?? args.connection_id ?? session.activeConnectionId ?? '')
       if (!id) throw new Error('connectionId required for create_sandbox_api_key')
-      consumeCredentialConfirmation(args, 'create_sandbox_api_key', id)
+      consumeCredentialConfirmation(args, 'create_sandbox_api_key', id, auth.orgId)
       const body: Record<string, unknown> = {}
       if (args.label !== undefined) body.label = args.label
       const result = await dashboardFetch<{
         sandboxApiKey: string
         key: { id: string, keyPrefix: string, environment: string, createdAt: string, label: string | null }
         note?: string
-      }>(auth.pat, `/api/connections/${encodeURIComponent(id)}/credentials/keys`, {
+      }>(auth.pat, `/api/connections/${safeId(id, 'connectionId')}/credentials/keys`, {
         method: 'POST',
         body: JSON.stringify(body)
       })
@@ -1444,7 +1716,7 @@ export async function callTool(
         webhookUrl: string | null
         webhookSecretConfigured: boolean
         webhookSecretMasked: string | null
-      }>(auth.pat, `/api/connections/${encodeURIComponent(id)}/credentials`)
+      }>(auth.pat, `/api/connections/${safeId(id, 'connectionId')}/credentials`)
       return {
         connectionId: creds.connectionId,
         activeKeys: creds.activeKeys ?? (creds.activeKey ? [creds.activeKey] : []),
@@ -1459,24 +1731,24 @@ export async function callTool(
       const keyId = String(args.keyId ?? args.key_id ?? '')
       if (!id) throw new Error('connectionId required for revoke_sandbox_api_key')
       if (!keyId) throw new Error('keyId required for revoke_sandbox_api_key')
-      consumeCredentialConfirmation(args, 'revoke_sandbox_api_key', revokeConfirmationTarget(id, keyId))
+      consumeCredentialConfirmation(args, 'revoke_sandbox_api_key', revokeConfirmationTarget(id, keyId), auth.orgId)
       const body: Record<string, unknown> = {}
       if (args.allowLast === true || args.allow_last === true) body.allowLast = true
       return dashboardFetch(
         auth.pat,
-        `/api/connections/${encodeURIComponent(id)}/credentials/keys/${encodeURIComponent(keyId)}/revoke`,
+        `/api/connections/${safeId(id, 'connectionId')}/credentials/keys/${safeId(keyId, 'keyId')}/revoke`,
         { method: 'POST', body: JSON.stringify(body) }
       )
     }
     case 'rotate_connection_webhook_secret': {
       const id = String(args.connectionId ?? args.connection_id ?? session.activeConnectionId ?? '')
       if (!id) throw new Error('connectionId required for rotate_connection_webhook_secret')
-      consumeCredentialConfirmation(args, 'rotate_connection_webhook_secret', id)
+      consumeCredentialConfirmation(args, 'rotate_connection_webhook_secret', id, auth.orgId)
       const result = await dashboardFetch<{
         webhookSecret: string
         note?: string
         effective?: { webhookUrl: string | null }
-      }>(auth.pat, `/api/connections/${encodeURIComponent(id)}/webhook/rotate-secret`, {
+      }>(auth.pat, `/api/connections/${safeId(id, 'connectionId')}/webhook/rotate-secret`, {
         method: 'POST'
       })
       return {
@@ -1511,53 +1783,127 @@ export async function callTool(
       }
       return result
     }
+    case 'env_connect': {
+      const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
+      if (!rawEnvId) throw new Error('environment_id is required for env_connect')
+      const encodedEnvId = safeId(rawEnvId, 'environment_id')
+      const env = await dashboardFetch<Record<string, unknown>>(auth.pat, `/api/environments/${encodedEnvId}`)
+      session.activeEnvironmentId = rawEnvId
+      return {
+        ...env,
+        activeEnvironmentId: rawEnvId,
+        note: 'Active environment set for this session. Subsequent env_* tools will default to this environment.'
+      }
+    }
     case 'env_get': {
-      const envId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
-      if (!envId) throw new Error('environment_id is required; call env_create or env_list first')
-      return dashboardFetch(auth.pat, `/api/environments/${encodeURIComponent(envId)}`)
+      const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
+      if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
+      const encodedEnvId = safeId(rawEnvId, 'environment_id')
+      if (!session.activeEnvironmentId) {
+        session.activeEnvironmentId = rawEnvId
+      }
+      return dashboardFetch(auth.pat, `/api/environments/${encodedEnvId}`)
+    }
+    case 'env_list_tables': {
+      const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
+      if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
+      const encodedEnvId = safeId(rawEnvId, 'environment_id')
+      return dashboardFetch(auth.pat, `/api/environments/${encodedEnvId}/db/tables`)
     }
     case 'env_query_db': {
-      const envId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
-      if (!envId) throw new Error('environment_id is required; call env_create or env_list first')
+      const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
+      if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
+      const encodedEnvId = safeId(rawEnvId, 'environment_id')
       const sql = String(args.sql ?? args.query ?? '').trim()
       if (!sql) throw new Error('sql is required')
       const addon = String(args.addon ?? args.pack ?? 'postgres').trim()
-      return dashboardFetch(auth.pat, `/api/environments/${encodeURIComponent(envId)}/db/query`, {
+      return dashboardFetch(auth.pat, `/api/environments/${encodedEnvId}/db/query`, {
         method: 'POST',
         body: JSON.stringify({ sql, addon, actor_type: 'human_user' })
       })
     }
+    case 'env_record_outcome': {
+      const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
+      if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
+      const encodedEnvId = safeId(rawEnvId, 'environment_id')
+      const outcomeType = String(args.outcome_type ?? args.outcomeType ?? '').trim()
+      if (!outcomeType) throw new Error('outcome_type is required')
+      const summary = String(args.summary ?? '').trim()
+      if (!summary) throw new Error('summary is required')
+      const body: Record<string, unknown> = {
+        outcome_type: outcomeType,
+        summary
+      }
+      if (args.patient_id ?? args.patientId) body.patient_id = String(args.patient_id ?? args.patientId).trim()
+      if (args.score !== undefined || args.risk_score !== undefined) {
+        body.score = Number(args.score ?? args.risk_score)
+      }
+      if (args.source_agent ?? args.sourceAgent) {
+        body.source_agent = String(args.source_agent ?? args.sourceAgent).trim()
+      }
+      if (args.payload && typeof args.payload === 'object') {
+        body.payload = args.payload
+      }
+      return dashboardFetch(auth.pat, `/api/environments/${encodedEnvId}/db/outcomes`, {
+        method: 'POST',
+        body: JSON.stringify(body)
+      })
+    }
     case 'env_trigger_scenario': {
-      const envId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
-      if (!envId) throw new Error('environment_id is required; call env_create or env_list first')
+      const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
+      if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
+      const encodedEnvId = safeId(rawEnvId, 'environment_id')
       const scenario = String(args.scenario ?? args.scenario_id ?? args.scenarioId ?? '').trim()
       if (!scenario) throw new Error('scenario is required (e.g. er_arrival, lab_critical, discharge, code_blue)')
       const body: Record<string, unknown> = { scenario }
       if (args.patient_id ?? args.patientId) body.patient_id = String(args.patient_id ?? args.patientId)
       if (args.notes) body.notes = String(args.notes)
-      return dashboardFetch(auth.pat, `/api/environments/${encodeURIComponent(envId)}/ehr/scenarios/trigger`, {
+      return dashboardFetch(auth.pat, `/api/environments/${encodedEnvId}/ehr/scenarios/trigger`, {
         method: 'POST',
         body: JSON.stringify(body)
       })
     }
+    case 'env_list_patients': {
+      const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
+      if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
+      const encodedEnvId = safeId(rawEnvId, 'environment_id')
+      const params = new URLSearchParams()
+      if (args.limit != null) params.set('limit', String(Number(args.limit)))
+      const qs = params.toString() ? `?${params.toString()}` : ''
+      return dashboardFetch(auth.pat, `/api/environments/${encodedEnvId}/ehr/patients${qs}`)
+    }
     case 'env_get_patient_chart': {
-      const envId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
-      if (!envId) throw new Error('environment_id is required; call env_create or env_list first')
-      const patientId = String(args.patient_id ?? args.patientId ?? '').trim()
-      if (!patientId) throw new Error('patient_id is required (e.g. pat_001)')
-      return dashboardFetch(auth.pat, `/api/environments/${encodeURIComponent(envId)}/ehr/patients/${encodeURIComponent(patientId)}`)
+      const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
+      if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
+      const encodedEnvId = safeId(rawEnvId, 'environment_id')
+      const rawPatientId = String(args.patient_id ?? args.patientId ?? '').trim()
+      if (!rawPatientId) throw new Error('patient_id is required (e.g. pat_001)')
+      const encodedPatientId = safeId(rawPatientId, 'patient_id')
+      return dashboardFetch(auth.pat, `/api/environments/${encodedEnvId}/ehr/patients/${encodedPatientId}`)
+    }
+    case 'env_get_logs': {
+      const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
+      if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
+      const encodedEnvId = safeId(rawEnvId, 'environment_id')
+      const params = new URLSearchParams()
+      if (args.limit != null) params.set('limit', String(Number(args.limit)))
+      if (args.event_type ?? args.eventType) params.set('event_type', String(args.event_type ?? args.eventType).trim())
+      const qs = params.toString() ? `?${params.toString()}` : ''
+      return dashboardFetch(auth.pat, `/api/environments/${encodedEnvId}/logs${qs}`)
     }
     case 'env_pause': {
-      const envId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
-      if (!envId) throw new Error('environment_id is required; call env_create or env_list first')
-      return dashboardFetch(auth.pat, `/api/environments/${encodeURIComponent(envId)}/pause`, {
+      const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
+      if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
+      const encodedEnvId = safeId(rawEnvId, 'environment_id')
+      return dashboardFetch(auth.pat, `/api/environments/${encodedEnvId}/pause`, {
         method: 'POST'
       })
     }
     case 'env_resume': {
-      const envId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
-      if (!envId) throw new Error('environment_id is required; call env_create or env_list first')
-      return dashboardFetch(auth.pat, `/api/environments/${encodeURIComponent(envId)}/resume`, {
+      const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
+      if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
+      const encodedEnvId = safeId(rawEnvId, 'environment_id')
+      return dashboardFetch(auth.pat, `/api/environments/${encodedEnvId}/resume`, {
         method: 'POST'
       })
     }
