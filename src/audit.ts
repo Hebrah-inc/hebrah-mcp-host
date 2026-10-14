@@ -16,7 +16,8 @@ export async function logMcpAudit(input: {
         'Content-Type': 'application/json',
         'x-hebrah-mcp-internal-secret': config.mcpInternalSecret
       },
-      body: JSON.stringify(input)
+      body: JSON.stringify(input),
+      signal: AbortSignal.timeout(5_000)
     })
   } catch {
     // non-fatal

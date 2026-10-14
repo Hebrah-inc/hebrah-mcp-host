@@ -18,15 +18,15 @@ FROM --platform=linux/amd64 node:22-alpine AS runner
 
 WORKDIR /app
 
-RUN corepack enable
-
 ENV NODE_ENV=production
 ENV PORT=3021
 ENV HOST=0.0.0.0
 
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/package.json /app/pnpm-lock.yaml ./
-COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder --chown=node:node /app/dist ./dist
+COPY --from=builder --chown=node:node /app/package.json /app/pnpm-lock.yaml ./
+COPY --from=builder --chown=node:node /app/node_modules ./node_modules
+
+USER node
 
 EXPOSE 3021
 

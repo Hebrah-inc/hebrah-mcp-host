@@ -5,7 +5,7 @@ loadEnvFile()
 function requireSecret(name: string, minLength = 32): string {
   const secret = process.env[name]?.trim()
   if (!secret) {
-    throw new Error(`${name} is required (≥${minLength} chars). Run: bash ../scripts/generate-local-secrets.sh`)
+    throw new Error(`${name} is required (≥${minLength} chars). Generate one with: openssl rand -hex 32`)
   }
   if (secret.length < minLength) {
     throw new Error(`${name} must be at least ${minLength} characters`)

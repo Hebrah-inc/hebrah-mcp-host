@@ -5,17 +5,17 @@ steps:
     args:
       - '-c'
       - |
-        docker pull ${_IMAGE_URI}:latest || true
+        docker pull ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}:latest || true
 
   # 2. Build image with Docker BuildKit and remote cache
   - name: 'gcr.io/cloud-builders/docker'
     args:
       - 'build'
-      - '--cache-from=${_IMAGE_URI}:latest'
+      - '--cache-from=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}:latest'
       - '-t'
-      - '${_IMAGE_URI}:${SHORT_SHA}'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}:${SHORT_SHA}'
       - '-t'
-      - '${_IMAGE_URI}:latest'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}:latest'
       - '-f'
       - 'Dockerfile'
       - '.'
@@ -24,7 +24,7 @@ steps:
 
   # 3. Push both tagged revisions to Google Artifact Registry
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', '--all-tags', '${_IMAGE_URI}']
+    args: ['push', '--all-tags', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}']
 
   # 4. Deploy revision to Cloud Run
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
@@ -35,13 +35,14 @@ steps:
       - 'update'
       - '${_SERVICE_NAME}'
       - '--region=${_REGION}'
-      - '--image=${_IMAGE_URI}:${SHORT_SHA}'
+      - '--image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}:${SHORT_SHA}'
       - '--quiet'
 
 substitutions:
   _REGION: 'us-central1'
-  _IMAGE_URI: 'us-central1-docker.pkg.dev/hebrah-001/hebrah-docker/hebrah-mcp-host'
-  _SERVICE_NAME: 'hebrah-staging-mcp'
+  _AR_REPO: 'hebrah-docker'
+  _IMAGE_NAME: 'hebrah-mcp-host'
+  _SERVICE_NAME: 'hebrah-mcp-host'
 
 options:
   machineType: 'E2_HIGHCPU_8'

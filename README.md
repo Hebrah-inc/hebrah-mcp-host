@@ -6,7 +6,7 @@
 [![GitHub stars](https://img.shields.io/github/stars/Hebrah-inc/hebrah-mcp-host.svg?style=social)](https://github.com/Hebrah-inc/hebrah-mcp-host)
 [![GitHub issues](https://img.shields.io/github/issues/Hebrah-inc/hebrah-mcp-host.svg)](https://github.com/Hebrah-inc/hebrah-mcp-host/issues)
 
-Open-source **[Model Context Protocol](https://modelcontextprotocol.io/)** server for the [Hebrah](https://hebrah.com) platform. Bridges MCP clients (Cursor, Claude Code, etc.) to a Hebrah dashboard + control plane over Streamable HTTP, using a per-user Personal Access Token (`hb_pat_*`).
+Open-source **[Model Context Protocol](https://modelcontextprotocol.io/)** server for the [Hebrah](https://hebrah.com) platform. Bridges MCP clients (Cursor, Claude Code, etc.) to a Hebrah dashboard + control plane over Streamable HTTP, using a per-user Personal Access Token (`hb_pat_*`) or an Agent Connection Key (`hb_conn_*`).
 
 - **Source:** https://github.com/Hebrah-inc/hebrah-mcp-host
 - **License:** [MIT](./LICENSE)
@@ -19,10 +19,11 @@ Open-source **[Model Context Protocol](https://modelcontextprotocol.io/)** serve
 
 ## What it does
 
-`hebrah-mcp-host` exposes ~50 tools that let an agent:
+`hebrah-mcp-host` exposes ~55 tools that let an agent:
 
 | Category | Examples |
 |---|---|
+| **Isolated Health Environments** | `env_list`, `env_create`, `env_get`, `env_delete`, `env_attach_module`, `env_detach_module`, `env_query`, `env_ehr_scenario`, `env_wireguard_config` |
 | **Account onboarding** | `create_account` *(optional, disabled by default)* — create a Sandbox trial and invite a human billing owner |
 | **Connection lifecycle** | `list_connections`, `create_connection`, `pause_connection`, `remove_connection` |
 | **Sandbox exploration** | `get_sandbox_catalog`, `list_sandbox_domains`, `run_sandbox_scenario` |
@@ -93,7 +94,7 @@ docker run --rm -p 3021:3021 --env-file .env hebrah-mcp-host
 
 ## Connecting a client
 
-Point your MCP client at `/mcp` with a Bearer `hb_pat_*` token. In Cursor:
+Point your MCP client at `/mcp` with a Bearer `hb_pat_*` or `hb_conn_*` token. In Cursor:
 
 ```json
 {
@@ -108,7 +109,7 @@ Point your MCP client at `/mcp` with a Bearer `hb_pat_*` token. In Cursor:
 }
 ```
 
-Or use `GET /api/mcp/cursor-config` on hebrah-app to mint a Cursor snippet for your org.
+Or use `npx @hebrah/cli login` / `GET /api/mcp/cursor-config` on hebrah-app to mint a Cursor snippet for your org.
 
 ---
 
@@ -117,6 +118,7 @@ Or use `GET /api/mcp/cursor-config` on hebrah-app to mint a Cursor snippet for y
 | Credential | Used for |
 |---|---|
 | `hb_pat_*` (per-user PAT) | MCP session auth — dashboard reads/writes via PAT-scoped API |
+| `hb_conn_*` (agent key) | MCP session auth — CLI/headless agent access to Isolated Health Environments & Connect tools |
 | `hb_test_*` (`HEBRAH_SANDBOX_API_KEY`) | Direct hebrah-api calls from the MCP host (catalog, mock webhook trigger) |
 | `hbsec_*` | Per-connection webhook signing secret (held by hebrah-app) |
 

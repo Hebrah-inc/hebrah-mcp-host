@@ -137,9 +137,16 @@ interface McpSession {
   transport: WebStandardStreamableHTTPServerTransport
   server: Server
   auth: McpAuth
+  createdAt: number
 }
 
+const BOOTSTRAP_SESSION_TTL_MS = 10 * 60 * 1000
 const mcpSessions = new Map<string, McpSession>()
+
+function redactSessionId(sessionId: string | undefined): string {
+  if (!sessionId) return 'new'
+  return `${sessionId.slice(0, 8)}…`
+}
 
 function sessionNotFoundResponse(): Response {
   return new Response(
@@ -197,7 +204,7 @@ async function createMcpSession(auth: McpAuth): Promise<McpSession> {
     }
   }
 
-  sessionRef = { transport, server, auth }
+  sessionRef = { transport, server, auth, createdAt: Date.now() }
   await server.connect(transport)
   return sessionRef
 }
@@ -220,8 +227,18 @@ app.all('/mcp', async (c) => {
   }
 
   const sessionHeader = c.req.header('mcp-session-id')
+  let existingSession = sessionHeader ? mcpSessions.get(sessionHeader) : undefined
+  if (
+    existingSession?.auth.bootstrap &&
+    Date.now() - existingSession.createdAt > BOOTSTRAP_SESSION_TTL_MS &&
+    sessionHeader
+  ) {
+    mcpSessions.delete(sessionHeader)
+    deleteSession(sessionHeader)
+    existingSession = undefined
+  }
+
   const bearer = extractBearerToken(c.req.header('authorization'))
-  const existingSession = sessionHeader ? mcpSessions.get(sessionHeader) : undefined
 
   let auth: McpAuth
   if (bearer?.kind === 'agent') {
@@ -279,8 +296,17 @@ app.all('/mcp', async (c) => {
   const requestSessionId = c.req.header('mcp-session-id') ?? undefined
   let parsedBody: unknown
   if (c.req.method === 'POST') {
+    let rawText: string
     try {
-      parsedBody = await c.req.json()
+      rawText = await c.req.text()
+    } catch {
+      return c.json({ error: 'Invalid request body' }, 400)
+    }
+    if (Buffer.byteLength(rawText, 'utf8') > MAX_BODY_BYTES) {
+      return c.json({ error: 'Payload too large' }, 413)
+    }
+    try {
+      parsedBody = JSON.parse(rawText)
     } catch {
       return c.json({ error: 'Invalid JSON body' }, 400)
     }
@@ -288,7 +314,7 @@ app.all('/mcp', async (c) => {
 
   const methodLabel = c.req.method === 'POST' ? describeMcpBody(parsedBody) : c.req.method
   console.log(
-    `[mcp] ${c.req.method} /mcp session=${sessionHeader ?? 'new'} methods=${methodLabel} host=${c.req.header('host') ?? '-'}`
+    `[mcp] ${c.req.method} /mcp session=${redactSessionId(sessionHeader)} methods=${methodLabel} host=${c.req.header('host') ?? '-'}`
   )
 
   const handleOptions = c.req.method === 'POST' ? { parsedBody } : undefined
@@ -313,7 +339,7 @@ app.all('/mcp', async (c) => {
       }
       return finalizeMcpResponse(response)
     }
-    console.warn(`[mcp] stale session ${requestSessionId} — restart MCP in Cursor after hebrah-mcp-host restarts`)
+    console.warn(`[mcp] stale session ${redactSessionId(requestSessionId)} — restart MCP in Cursor after hebrah-mcp-host restarts`)
     return sessionNotFoundResponse()
   }
 
