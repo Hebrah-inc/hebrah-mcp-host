@@ -239,7 +239,10 @@ app.use('*', async (c, next) => {
   c.header('X-Content-Type-Options', 'nosniff')
   c.header('X-Frame-Options', 'DENY')
   c.header('Cache-Control', 'no-store')
+  c.header('X-Robots-Tag', 'noindex, nofollow, noarchive, nosnippet')
 })
+
+app.get('/robots.txt', c => c.text('User-agent: *\nDisallow: /\n'))
 
 app.get('/health', c => c.json({ ok: true }))
 
