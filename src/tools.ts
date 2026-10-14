@@ -144,6 +144,22 @@ export function assertSafeSidecarUrl(rawUrl: string): string {
   return normalizedOriginPath
 }
 
+const SECRET_PATTERNS: Array<[RegExp, string]> = [
+  [/\bhb_(?:live|test|pat|conn|claim)_[A-Za-z0-9_-]+/g, 'hb_[REDACTED]'],
+  [/\bhbsec_[A-Za-z0-9_-]+/g, 'hbsec_[REDACTED]'],
+  [/\benc:v1:[A-Za-z0-9+/=_:-]+/g, 'enc:v1:[REDACTED]'],
+  [/(Authorization\s*:\s*Bearer\s+)[^\s"',;]+/gi, '$1[REDACTED]'],
+  [/(PrivateKey\s*=\s*)[^\s\r\n]+/gi, '$1[REDACTED]']
+]
+
+export function redactSecrets(text: string): string {
+  let out = text
+  for (const [pattern, replacement] of SECRET_PATTERNS) {
+    out = out.replace(pattern, replacement)
+  }
+  return out
+}
+
 async function connectFetch<T>(
   auth: McpAuth,
   session: { connectApiKey?: string, connectAccountId?: string },
@@ -160,7 +176,7 @@ async function connectFetch<T>(
         signal: AbortSignal.timeout(15_000)
       })
       if (!response.ok) {
-        throw new Error(`Hebrah Connect account creation failed (${response.status}): ${await response.text()}`)
+        throw new Error(redactSecrets(`Hebrah Connect account creation failed (${response.status}): ${await response.text()}`))
       }
       const account = await response.json() as { account_id: string, api_key: string }
       session.connectApiKey = account.api_key
@@ -178,12 +194,12 @@ async function connectFetch<T>(
     signal: init?.signal ?? AbortSignal.timeout(30_000)
   })
   if (!response.ok) {
-    throw new Error(`Hebrah Connect ${path} failed (${response.status}): ${await response.text()}`)
+    throw new Error(redactSecrets(`Hebrah Connect ${path} failed (${response.status}): ${await response.text()}`))
   }
   return response.json() as Promise<T>
 }
 
-async function ultraFetch<T>(path: string, init?: RequestInit): Promise<T> {
+async function ultraFetch<T>(orgId: string, path: string, init?: RequestInit): Promise<T> {
   const key = config.sandboxApiKey
   if (!key.startsWith('hb_test_')) {
     throw new Error('HEBRAH_SANDBOX_API_KEY must be set on hebrah-mcp-host for hebrah-api tools')
@@ -193,12 +209,13 @@ async function ultraFetch<T>(path: string, init?: RequestInit): Promise<T> {
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${key}`,
+      ...(orgId ? { 'X-Hebrah-Org-Id': orgId } : {}),
       ...(init?.headers ?? {})
     },
     signal: init?.signal ?? AbortSignal.timeout(30_000)
   })
   if (!res.ok) {
-    throw new Error(`hebrah-api ${path} failed (${res.status}): ${await res.text()}`)
+    throw new Error(redactSecrets(`hebrah-api ${path} failed (${res.status}): ${await res.text()}`))
   }
   return res.json() as Promise<T>
 }
@@ -232,7 +249,7 @@ async function agentApiFetch<T>(
     } catch {
       // non-JSON error body — keep the default message
     }
-    throw new Error(message)
+    throw new Error(redactSecrets(message))
   }
   return res.json() as Promise<T>
 }
@@ -508,7 +525,7 @@ async function dashboardFetch<T>(pat: string, path: string, init?: RequestInit):
     signal: init?.signal ?? AbortSignal.timeout(30_000)
   })
   if (!res.ok) {
-    throw new Error(`Dashboard ${path} failed (${res.status}): ${await res.text()}`)
+    throw new Error(redactSecrets(`Dashboard ${path} failed (${res.status}): ${await res.text()}`))
   }
   return res.json() as Promise<T>
 }
@@ -1231,7 +1248,7 @@ export async function callTool(
     case 'get_sandbox_catalog': {
       const connectionId = args.connectionId ?? session.activeConnectionId
       const q = connectionId ? `?connection_id=${encodeURIComponent(String(connectionId))}` : ''
-      return ultraFetch(`/v1/sandbox/catalog${q}`)
+      return ultraFetch(auth.orgId, `/v1/sandbox/catalog${q}`)
     }
     case 'trigger_test_webhook': {
       const connectionId = args.connection_id ?? args.connectionId ?? session.activeConnectionId
@@ -1248,21 +1265,22 @@ export async function callTool(
       if (args.domain_id ?? args.domainId) {
         body.domain_id = args.domain_id ?? args.domainId
       }
-      return ultraFetch('/v1/webhooks/trigger-mock-event', {
+      return ultraFetch(auth.orgId, '/v1/webhooks/trigger-mock-event', {
         method: 'POST',
         body: JSON.stringify(body)
       })
     }
     case 'list_sandbox_domains':
-      return ultraFetch('/v1/sandbox/domains')
+      return ultraFetch(auth.orgId, '/v1/sandbox/domains')
     case 'get_sandbox_domain':
-      return ultraFetch(`/v1/sandbox/domains/${safeId(String(args.domainId ?? args.domain_id ?? ''), 'domainId')}`)
+      return ultraFetch(auth.orgId, `/v1/sandbox/domains/${safeId(String(args.domainId ?? args.domain_id ?? ''), 'domainId')}`)
     case 'get_synthetic_resource': {
       const resourceType = String(args.resourceType ?? args.resource_type ?? '')
       const resourceId = String(args.resourceId ?? args.resource_id ?? '')
       const patientId = args.patientId ?? args.patient_id
       const q = patientId ? `?patient_id=${encodeURIComponent(String(patientId))}` : ''
       return ultraFetch(
+        auth.orgId,
         `/v1/sandbox/resources/${safeId(resourceType, 'resourceType')}/${safeId(resourceId, 'resourceId')}${q}`
       )
     }
@@ -1278,19 +1296,19 @@ export async function callTool(
       if (args.delay_seconds !== undefined || args.delaySeconds !== undefined) {
         body.delay_seconds = args.delay_seconds ?? args.delaySeconds
       }
-      return ultraFetch(`/v1/sandbox/scenarios/${safeId(scenarioId, 'scenarioId')}/run`, {
+      return ultraFetch(auth.orgId, `/v1/sandbox/scenarios/${safeId(scenarioId, 'scenarioId')}/run`, {
         method: 'POST',
         body: JSON.stringify(body)
       })
     }
     case 'get_payer_rules':
-      return ultraFetch(`/v1/sandbox/payer-rules/${safeId(String(args.payerId ?? args.payer_id ?? 'payer_aetna'), 'payerId')}`)
+      return ultraFetch(auth.orgId, `/v1/sandbox/payer-rules/${safeId(String(args.payerId ?? args.payer_id ?? 'payer_aetna'), 'payerId')}`)
     case 'list_sandbox_events': {
-      const catalog = await ultraFetch<{ event_groups?: Record<string, string[]> }>('/v1/sandbox/catalog')
+      const catalog = await ultraFetch<{ event_groups?: Record<string, string[]> }>(auth.orgId, '/v1/sandbox/catalog')
       return catalog.event_groups ?? {}
     }
     case 'list_hl7_templates':
-      return ultraFetch('/v1/sandbox/hl7/templates')
+      return ultraFetch(auth.orgId, '/v1/sandbox/hl7/templates')
     case 'inject_hl7': {
       const body: Record<string, unknown> = {
         patient_id: args.patient_id ?? args.patientId ?? 'pat_00000000_01',
@@ -1309,7 +1327,7 @@ export async function callTool(
       if (args.event) {
         body.event = args.event
       }
-      return ultraFetch('/v1/sandbox/hl7/inject', {
+      return ultraFetch(auth.orgId, '/v1/sandbox/hl7/inject', {
         method: 'POST',
         body: JSON.stringify(body)
       })
@@ -1333,7 +1351,7 @@ export async function callTool(
         })
       })
       if (!res.ok) {
-        throw new Error(`sidecar write-back failed (${res.status}): ${await res.text()}`)
+        throw new Error(redactSecrets(`sidecar write-back failed (${res.status}): ${await res.text()}`))
       }
       return res.json()
     }
@@ -1354,7 +1372,7 @@ export async function callTool(
         signal: AbortSignal.timeout(15_000)
       })
       if (!res.ok) {
-        throw new Error(`hl7-probe failed (${res.status}): ${await res.text()}`)
+        throw new Error(redactSecrets(`hl7-probe failed (${res.status}): ${await res.text()}`))
       }
       return res.json()
     }
@@ -1365,17 +1383,17 @@ export async function callTool(
       if (args.status) params.set('status', String(args.status))
       if (args.limit) params.set('limit', String(args.limit))
       const q = params.toString() ? `?${params.toString()}` : ''
-      return ultraFetch(`/v1/webhooks/deliveries${q}`)
+      return ultraFetch(auth.orgId, `/v1/webhooks/deliveries${q}`)
     }
     case 'replay_webhook_delivery': {
       const deliveryId = String(args.delivery_id ?? args.deliveryId ?? '')
       if (!deliveryId) throw new Error('deliveryId required')
-      return ultraFetch(`/v1/webhooks/deliveries/${safeId(deliveryId, 'deliveryId')}/replay`, {
+      return ultraFetch(auth.orgId, `/v1/webhooks/deliveries/${safeId(deliveryId, 'deliveryId')}/replay`, {
         method: 'POST'
       })
     }
     case 'configure_webhook_reliability': {
-      return ultraFetch('/v1/sandbox/webhook-reliability', {
+      return ultraFetch(auth.orgId, '/v1/sandbox/webhook-reliability', {
         method: 'PATCH',
         body: JSON.stringify({
           mode: args.mode ?? 'healthy',
@@ -1388,7 +1406,7 @@ export async function callTool(
     case 'run_webhook_reliability_scenario': {
       const scenarioId = String(args.scenario_id ?? args.scenarioId ?? 'webhook_transient_recovery')
       const profileMode = args.mode ?? 'transient_503'
-      await ultraFetch('/v1/sandbox/webhook-reliability', {
+      await ultraFetch(auth.orgId, '/v1/sandbox/webhook-reliability', {
         method: 'PATCH',
         body: JSON.stringify({ mode: profileMode, fail_rate: 0.8 })
       })
@@ -1397,7 +1415,7 @@ export async function callTool(
         patient_id: args.patient_id ?? args.patientId ?? 'pat_00000000_01'
       }
       if (connectionId) body.connection_id = connectionId
-      return ultraFetch(`/v1/sandbox/scenarios/${safeId(scenarioId, 'scenarioId')}/run`, {
+      return ultraFetch(auth.orgId, `/v1/sandbox/scenarios/${safeId(scenarioId, 'scenarioId')}/run`, {
         method: 'POST',
         body: JSON.stringify(body)
       })
@@ -1421,7 +1439,7 @@ export async function callTool(
         })
       })
     case 'run_mpi_match':
-      return ultraFetch('/v1/sandbox/mpi/match', {
+      return ultraFetch(auth.orgId, '/v1/sandbox/mpi/match', {
         method: 'POST',
         body: JSON.stringify({
           first_name: args.first_name ?? args.firstName,
@@ -1437,7 +1455,7 @@ export async function callTool(
       }
       const connectionId = args.connection_id ?? args.connectionId ?? session.activeConnectionId
       if (connectionId) body.connection_id = connectionId
-      return ultraFetch(`/v1/sandbox/scenarios/${safeId(scenarioId, 'scenarioId')}/run`, {
+      return ultraFetch(auth.orgId, `/v1/sandbox/scenarios/${safeId(scenarioId, 'scenarioId')}/run`, {
         method: 'POST',
         body: JSON.stringify(body)
       })
@@ -1448,7 +1466,7 @@ export async function callTool(
       if (args.include_role === false) params.set('include_role', 'false')
       if (args.include_verification === false) params.set('include_verification', 'false')
       const q = params.toString() ? `?${params.toString()}` : ''
-      return ultraFetch(`/v1/sandbox/credentialing/practitioners/${safeId(practitionerId, 'practitionerId')}${q}`)
+      return ultraFetch(auth.orgId, `/v1/sandbox/credentialing/practitioners/${safeId(practitionerId, 'practitionerId')}${q}`)
     }
     case 'run_credentialing_scenario': {
       const scenarioId = String(args.scenarioId ?? args.scenario_id ?? 'credentialing_verify_practitioner')
@@ -1457,13 +1475,13 @@ export async function callTool(
       }
       const connectionId = args.connection_id ?? args.connectionId ?? session.activeConnectionId
       if (connectionId) body.connection_id = connectionId
-      return ultraFetch(`/v1/sandbox/scenarios/${safeId(scenarioId, 'scenarioId')}/run`, {
+      return ultraFetch(auth.orgId, `/v1/sandbox/scenarios/${safeId(scenarioId, 'scenarioId')}/run`, {
         method: 'POST',
         body: JSON.stringify(body)
       })
     }
     case 'run_aggregator_query':
-      return ultraFetch('/v1/sandbox/aggregator/query', {
+      return ultraFetch(auth.orgId, '/v1/sandbox/aggregator/query', {
         method: 'POST',
         body: JSON.stringify({
           patient_id: args.patient_id ?? args.patientId ?? 'pat_00000000_01',
@@ -1478,7 +1496,7 @@ export async function callTool(
       }
       const connectionId = args.connection_id ?? args.connectionId ?? session.activeConnectionId
       if (connectionId) body.connection_id = connectionId
-      return ultraFetch(`/v1/sandbox/scenarios/${safeId(scenarioId, 'scenarioId')}/run`, {
+      return ultraFetch(auth.orgId, `/v1/sandbox/scenarios/${safeId(scenarioId, 'scenarioId')}/run`, {
         method: 'POST',
         body: JSON.stringify(body)
       })
@@ -1486,26 +1504,26 @@ export async function callTool(
     case 'get_synthetic_ehr_profile': {
       const connectionId = args.connection_id ?? args.connectionId ?? session.activeConnectionId
       const q = connectionId ? `?connection_id=${encodeURIComponent(String(connectionId))}` : ''
-      return ultraFetch(`/v1/sandbox/synthetic-ehr/profile${q}`)
+      return ultraFetch(auth.orgId, `/v1/sandbox/synthetic-ehr/profile${q}`)
     }
     case 'list_ehr_base_models':
-      return ultraFetch('/v1/sandbox/ehr-models')
+      return ultraFetch(auth.orgId, '/v1/sandbox/ehr-models')
     case 'reset_synthetic_ehr_data': {
       const connectionId = args.connection_id ?? args.connectionId ?? session.activeConnectionId
       const q = connectionId ? `?connection_id=${encodeURIComponent(String(connectionId))}` : ''
-      return ultraFetch(`/v1/sandbox/synthetic-ehr/reset${q}`, { method: 'POST' })
+      return ultraFetch(auth.orgId, `/v1/sandbox/synthetic-ehr/reset${q}`, { method: 'POST' })
     }
     case 'list_research_packs':
-      return ultraFetch('/v1/sandbox/research-packs')
+      return ultraFetch(auth.orgId, '/v1/sandbox/research-packs')
     case 'get_research_pack': {
       const packId = String(args.pack_id ?? args.packId ?? 'medicare_utilization_v1')
-      return ultraFetch(`/v1/sandbox/research-packs/${safeId(packId, 'packId')}`)
+      return ultraFetch(auth.orgId, `/v1/sandbox/research-packs/${safeId(packId, 'packId')}`)
     }
     case 'apply_research_pack': {
       const packId = String(args.pack_id ?? args.packId ?? 'medicare_utilization_v1')
       const connectionId = args.connection_id ?? args.connectionId ?? session.activeConnectionId
       const q = connectionId ? `?connection_id=${encodeURIComponent(String(connectionId))}` : ''
-      return ultraFetch(`/v1/sandbox/research-packs/${safeId(packId, 'packId')}/apply${q}`, {
+      return ultraFetch(auth.orgId, `/v1/sandbox/research-packs/${safeId(packId, 'packId')}/apply${q}`, {
         method: 'POST'
       })
     }
@@ -1513,13 +1531,13 @@ export async function callTool(
       const packId = String(args.pack_id ?? args.packId ?? 'medicare_utilization_v1')
       const connectionId = args.connection_id ?? args.connectionId ?? session.activeConnectionId
       const q = connectionId ? `?connection_id=${encodeURIComponent(String(connectionId))}` : ''
-      return ultraFetch(`/v1/sandbox/research-packs/${safeId(packId, 'packId')}/kpis${q}`)
+      return ultraFetch(auth.orgId, `/v1/sandbox/research-packs/${safeId(packId, 'packId')}/kpis${q}`)
     }
     case 'compare_research_pack': {
       const packId = String(args.pack_id ?? args.packId ?? 'medicare_utilization_v1')
       const connectionId = args.connection_id ?? args.connectionId ?? session.activeConnectionId
       const q = connectionId ? `?connection_id=${encodeURIComponent(String(connectionId))}` : ''
-      return ultraFetch(`/v1/sandbox/research-packs/${safeId(packId, 'packId')}/compare${q}`)
+      return ultraFetch(auth.orgId, `/v1/sandbox/research-packs/${safeId(packId, 'packId')}/compare${q}`)
     }
     case 'list_ptbxl_ecg_records': {
       const params = new URLSearchParams()
@@ -1530,12 +1548,12 @@ export async function callTool(
       if (args.limit != null) params.set('limit', String(args.limit))
       if (args.offset != null) params.set('offset', String(args.offset))
       const qs = params.toString()
-      return ultraFetch(`/v1/sandbox/research-packs/ptbxl_ecg_v1/records${qs ? `?${qs}` : ''}`)
+      return ultraFetch(auth.orgId, `/v1/sandbox/research-packs/ptbxl_ecg_v1/records${qs ? `?${qs}` : ''}`)
     }
     case 'get_ptbxl_ecg_record': {
       const ecgId = args.ecg_id ?? args.ecgId
       if (ecgId == null) throw new Error('ecg_id required for get_ptbxl_ecg_record')
-      return ultraFetch(`/v1/sandbox/research-packs/ptbxl_ecg_v1/records/${safeId(String(ecgId), 'ecg_id')}`)
+      return ultraFetch(auth.orgId, `/v1/sandbox/research-packs/ptbxl_ecg_v1/records/${safeId(String(ecgId), 'ecg_id')}`)
     }
     case 'get_ptbxl_ecg_waveform_meta': {
       const ecgId = args.ecg_id ?? args.ecgId
@@ -1549,7 +1567,7 @@ export async function callTool(
         leads?: Record<string, number[]>
         disclaimer?: string
         attribution?: string
-      }>(`/v1/sandbox/research-packs/ptbxl_ecg_v1/records/${encodedEcgId}/waveform`)
+      }>(auth.orgId, `/v1/sandbox/research-packs/ptbxl_ecg_v1/records/${encodedEcgId}/waveform`)
       const preview: Record<string, number[]> = {}
       for (const [lead, samples] of Object.entries(wave.leads || {})) {
         preview[lead] = Array.isArray(samples) ? samples.slice(0, 8) : []
@@ -1578,7 +1596,7 @@ export async function callTool(
         throw new Error('patient_id and ecg_id required for attach_ptbxl_ecg_exemplar')
       }
       const q = connectionId ? `?connection_id=${encodeURIComponent(String(connectionId))}` : ''
-      return ultraFetch(`/v1/sandbox/research-packs/ptbxl_ecg_v1/attach${q}`, {
+      return ultraFetch(auth.orgId, `/v1/sandbox/research-packs/ptbxl_ecg_v1/attach${q}`, {
         method: 'POST',
         body: JSON.stringify({
           patient_id: String(patientId),
@@ -1819,7 +1837,7 @@ export async function callTool(
       const addon = String(args.addon ?? args.pack ?? 'postgres').trim()
       return dashboardFetch(auth.pat, `/api/environments/${encodedEnvId}/db/query`, {
         method: 'POST',
-        body: JSON.stringify({ sql, addon, actor_type: 'human_user' })
+        body: JSON.stringify({ sql, addon, actor_type: 'agent' })
       })
     }
     case 'env_record_outcome': {

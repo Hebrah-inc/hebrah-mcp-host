@@ -21,6 +21,7 @@ import {
   toolDefinitions,
   agentToolDefinitions,
   AGENT_TOOL_NAMES,
+  redactSecrets,
   validatePat,
   type McpAuth
 } from './tools.js'
@@ -29,6 +30,28 @@ const PAT_TOKEN_RE = /^hb_pat_[A-Za-z0-9_-]{6,128}$/
 const AGENT_TOKEN_RE = /^hb_conn_[A-Za-z0-9_-]{6,128}$/
 const MAX_MCP_SESSIONS = 1_000
 const MAX_BODY_BYTES = 1_048_576
+
+export function isAllowedMcpOrigin(originHeader: string | undefined): boolean {
+  if (!originHeader) return true
+  let parsed: URL
+  try {
+    parsed = new URL(originHeader)
+  } catch {
+    return false
+  }
+  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return true
+  if (host === 'hebrah.com' || host.endsWith('.hebrah.com')) return true
+  if (host === 'hebrah.dev' || host.endsWith('.hebrah.dev')) return true
+  if (host.endsWith('.run.app')) return true
+  try {
+    const dashOrigin = new URL(config.dashboardUrl).origin
+    if (parsed.origin === dashOrigin) return true
+  } catch {
+    // ignore invalid dashboardUrl
+  }
+  return false
+}
 
 export function extractBearerToken(authHeader: string | undefined): { token: string, kind: 'pat' | 'agent' } | null {
   if (!authHeader?.startsWith('Bearer ')) return null
@@ -114,7 +137,7 @@ function createMcpServer(auth: McpAuth, sessionId: string) {
       }
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
+      const message = redactSecrets(error instanceof Error ? error.message : String(error))
       if (!auth.bootstrap) {
         await logMcpAudit({
           orgId: auth.orgId,
@@ -221,6 +244,9 @@ app.use('*', async (c, next) => {
 app.get('/health', c => c.json({ ok: true }))
 
 app.all('/mcp', async (c) => {
+  if (!isAllowedMcpOrigin(c.req.header('origin'))) {
+    return c.json({ error: 'Origin not allowed' }, 403)
+  }
   const contentLength = Number(c.req.header('content-length') ?? '0')
   if (Number.isFinite(contentLength) && contentLength > MAX_BODY_BYTES) {
     return c.json({ error: 'Payload too large' }, 413)
