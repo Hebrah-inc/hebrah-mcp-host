@@ -212,6 +212,37 @@ describe('agent environment tools (hb_conn_*)', () => {
     assert.equal(body.auto_reload_threshold_cents, 500)
     assert.equal(body.auto_reload_amount_cents, 2500)
   })
+
+  it('routes env_consult_architect and env_admit_patients in agent mode', async () => {
+    assert.ok(AGENT_TOOL_NAMES.includes('env_consult_architect'))
+    assert.ok(AGENT_TOOL_NAMES.includes('hebrah_consult_architect'))
+    assert.ok(AGENT_TOOL_NAMES.includes('env_admit_patients'))
+
+    await callTool(agentAuth, 'sess-arch-1', 'env_consult_architect', {
+      message: 'Spin up an ICU sepsis shock cohort with ventilator telemetry and DICOM CT imaging',
+      auto_provision: true
+    })
+    assert.equal(calls.length, 1)
+    assert.ok(calls[0].url.endsWith('/v1/environments/architect/chat'))
+    assert.equal(calls[0].init?.method, 'POST')
+    const archBody = JSON.parse(String(calls[0].init?.body))
+    assert.equal(archBody.auto_provision, true)
+    assert.equal(archBody.channel, 'agent_mcp')
+
+    await callTool(agentAuth, 'sess-arch-1', 'env_admit_patients', {
+      environment_id: 'env-target-1',
+      count: 6,
+      departments: ['Critical Care / ICU'],
+      diagnosis_pathways: ['Sepsis / Septic Shock'],
+      acuity_levels: ['Critical (ICU)']
+    })
+    assert.equal(calls.length, 2)
+    assert.ok(calls[1].url.endsWith('/v1/environments/env-target-1/ehr/patients/generate'))
+    assert.equal(calls[1].init?.method, 'POST')
+    const admitBody = JSON.parse(String(calls[1].init?.body))
+    assert.equal(admitBody.count, 6)
+    assert.deepEqual(admitBody.departments, ['Critical Care / ICU'])
+  })
 })
 
 describe('PAT environment tools (hb_pat_*)', () => {
@@ -253,6 +284,20 @@ describe('PAT environment tools (hb_pat_*)', () => {
     })
     assert.ok(calls[4].url.endsWith('/api/environments/env-lab-1/db/outcomes'))
     assert.equal(calls[4].init?.method, 'POST')
+
+    await callTool(patAuth, 'sess-pat-2', 'hebrah_consult_architect', {
+      message: 'Oncology breast cancer staging cohort with genomics',
+      auto_provision: false
+    })
+    assert.ok(calls[5].url.endsWith('/api/environments/architect/chat'))
+    assert.equal(calls[5].init?.method, 'POST')
+
+    await callTool(patAuth, 'sess-pat-2', 'env_admit_patients', {
+      count: 4,
+      departments: ['Oncology & Infusion']
+    })
+    assert.ok(calls[6].url.endsWith('/api/environments/env-lab-1/ehr/patients/generate'))
+    assert.equal(calls[6].init?.method, 'POST')
   })
 })
 

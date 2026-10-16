@@ -268,6 +268,9 @@ export const AGENT_TOOL_NAMES = [
   'get_usage_forecast',
   'env_list',
   'env_create',
+  'env_consult_architect',
+  'hebrah_consult_architect',
+  'env_admit_patients',
   'env_connect',
   'env_get',
   'env_list_tables',
@@ -337,17 +340,63 @@ export const agentToolDefinitions = [
   },
   {
     name: 'env_create',
-    description: 'Provision a new isolated clinic health environment with synthetic EHR and attachable database modules',
+    description: 'Provision a new isolated clinic health environment with synthetic EHR, diversified hospital departments/pathways, 6 base clinical capability packs, and attachable database modules',
     inputSchema: {
       type: 'object',
       required: ['name'],
       properties: {
-        name: { type: 'string', description: 'Environment name (e.g. Pediatrics Testing)' },
+        name: { type: 'string', description: 'Environment name (e.g. Metro Hospital ICU & Oncology)' },
         clinic_type: { type: 'string', enum: ['ambulatory', 'hospital', 'cardiology', 'ambulatory_clinic', 'hospital_system', 'cardiology_center'], description: 'Clinic template (default: ambulatory)' },
         patient_cohort: { type: 'string', enum: ['general', 'geriatric', 'pediatric', 'cardiac', 'mixed'], description: 'Synthetic patient cohort (default: geriatric)' },
+        departments: { type: 'array', items: { type: 'string' }, description: 'Hospital departments to populate (emergency, icu, cardiology, oncology, obstetrics, pediatrics, behavioral, ambulatory)' },
+        diagnosis_pathways: { type: 'array', items: { type: 'string' }, description: 'Specific clinical archetype IDs (e.g. icu_septic_shock, onc_nsclc_immunotherapy, card_hfref)' },
+        treatment_modalities: { type: 'array', items: { type: 'string' }, description: 'Treatment modalities (pharmacotherapy, surgical_interventional, mechanical_ventilation_ecmo, immunotherapy_chemo, radiation_therapy, maternal_fetal_monitoring, behavioral_crisis,chronic_care_management)' },
+        acuity_levels: { type: 'array', items: { type: 'string' }, description: 'Acuity levels (routine, urgent, emergent, critical)' },
+        capability_packs: { type: 'array', items: { type: 'string' }, description: 'Base clinical capability packs (vocab_clinical, fhir_bulk_export, imaging_dicom, device_ieee11073, hie_ccda_xds, emerging_sdoh_genomics)' },
         addons: { type: 'array', items: { type: 'string' }, description: 'Database pack modules to attach (postgres, sqlite, vectordb, neo4j)' },
         patient_count: { type: 'number', description: 'Initial patient pool size (10-1000, default: 25)' },
         bed_count: { type: 'number', description: 'Inpatient bed capacity (0-200, default: 40)' }
+      }
+    }
+  },
+  {
+    name: 'env_consult_architect',
+    description: 'Consult the per-organization isolated Conversational Environment Architect Agent to design a custom hospital simulation blueprint from natural language requirements, or auto-provision it in one call',
+    inputSchema: {
+      type: 'object',
+      required: ['message'],
+      properties: {
+        message: { type: 'string', description: 'Natural language description of your clinical integration or AI agent testing needs' },
+        session_id: { type: 'string', description: 'Optional architect session ID to continue a multi-turn blueprint refinement' },
+        auto_provision: { type: 'boolean', description: 'If true, automatically provisions the synthesized EnvironmentBlueprint when ready' }
+      }
+    }
+  },
+  {
+    name: 'hebrah_consult_architect',
+    description: 'Alias for env_consult_architect — consult the isolated Conversational Environment Architect Agent to map out synthetic hospital departments, clinical packs, and database add-ons',
+    inputSchema: {
+      type: 'object',
+      required: ['message'],
+      properties: {
+        message: { type: 'string', description: 'Natural language description of your clinical integration or AI agent testing needs' },
+        session_id: { type: 'string', description: 'Optional architect session ID to continue a multi-turn blueprint refinement' },
+        auto_provision: { type: 'boolean', description: 'If true, automatically provisions the synthesized EnvironmentBlueprint when ready' }
+      }
+    }
+  },
+  {
+    name: 'env_admit_patients',
+    description: 'Dynamically admit and generate a new diversified synthetic patient cohort in an active environment by department, diagnosis pathway, treatment modality, or acuity',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        environment_id: { type: 'string', description: 'Environment ID (defaults to active session environment)' },
+        count: { type: 'number', description: 'Number of new synthetic patients to admit (1-100, default: 10)' },
+        departments: { type: 'array', items: { type: 'string' }, description: 'Hospital departments (emergency, icu, cardiology, oncology, obstetrics, pediatrics, behavioral, ambulatory)' },
+        diagnosis_pathways: { type: 'array', items: { type: 'string' }, description: 'Specific clinical archetype IDs' },
+        treatment_modalities: { type: 'array', items: { type: 'string' }, description: 'Treatment modalities' },
+        acuity_levels: { type: 'array', items: { type: 'string' }, description: 'Acuity levels (routine, urgent, emergent, critical)' }
       }
     }
   },
@@ -415,13 +464,13 @@ export const agentToolDefinitions = [
   },
   {
     name: 'env_trigger_scenario',
-    description: 'Trigger a synthetic clinical workflow scenario (e.g. er_arrival, lab_critical, discharge, code_blue) with live HL7 WebSocket alerts',
+    description: 'Trigger a synthetic clinical workflow scenario (e.g. er_arrival, lab_critical, discharge, code_blue, icu_sepsis_deterioration, ventilator_desaturation_alarm) with live HL7 WebSocket alerts',
     inputSchema: {
       type: 'object',
       required: ['scenario'],
       properties: {
         environment_id: { type: 'string', description: 'Environment ID (defaults to active session environment)' },
-        scenario: { type: 'string', enum: ['er_arrival', 'lab_critical', 'discharge', 'code_blue', 'vitals_spike'], description: 'Clinical scenario name' },
+        scenario: { type: 'string', enum: ['er_arrival', 'lab_critical', 'discharge', 'code_blue', 'vitals_spike', 'icu_sepsis_deterioration', 'ventilator_desaturation_alarm'], description: 'Clinical scenario name' },
         patient_id: { type: 'string', description: 'Optional target patient ID' },
         notes: { type: 'string', description: 'Optional clinical notes' }
       }
@@ -429,18 +478,22 @@ export const agentToolDefinitions = [
   },
   {
     name: 'env_list_patients',
-    description: 'List synthetic patients in the environment EHR with demographics and active status',
+    description: 'List synthetic patients in the environment EHR with multi-facet filtering by department, diagnosis pathway, treatment modality, or acuity',
     inputSchema: {
       type: 'object',
       properties: {
         environment_id: { type: 'string', description: 'Environment ID (defaults to active session environment)' },
+        department: { type: 'string', description: 'Filter by hospital department (emergency, icu, cardiology, oncology, obstetrics, pediatrics, behavioral, ambulatory)' },
+        diagnosis: { type: 'string', description: 'Filter by diagnosis pathway, ICD-10 code, or SNOMED CT code' },
+        treatment_modality: { type: 'string', description: 'Filter by treatment modality' },
+        acuity_level: { type: 'string', description: 'Filter by acuity level (routine, urgent, emergent, critical)' },
         limit: { type: 'number', description: 'Maximum number of patients to return (1-200, default: 50)' }
       }
     }
   },
   {
     name: 'env_get_patient_chart',
-    description: 'Retrieve a complete synthetic patient chart (demographics, conditions, medications, vitals, lab results, encounters)',
+    description: 'Retrieve a complete synthetic patient chart (demographics, conditions, medications, vitals, lab results, encounters, imaging studies, genomics, SDOH, external C-CDA documents)',
     inputSchema: {
       type: 'object',
       required: ['patient_id'],
@@ -598,14 +651,17 @@ export const toolDefinitions = [
   { name: 'rotate_connection_webhook_secret', description: 'Rotate connection hbsec_* webhook secret (requires confirm_action token; plaintext once)' },
   { name: 'get_sdk_reference', description: 'Official @hebrah/sdk (Node) reference — install, API surface, MCP-to-SDK mapping. Do not web-search npm.' },
   { name: 'env_list', description: 'List isolated health environments for this organization' },
-  { name: 'env_create', description: 'Provision a new isolated clinic health environment with synthetic EHR and attachable database modules' },
+  { name: 'env_create', description: 'Provision a new isolated clinic health environment with synthetic EHR, diversified hospital departments/pathways, 6 base clinical capability packs, and attachable database modules' },
+  { name: 'env_consult_architect', description: 'Consult the per-organization isolated Conversational Environment Architect Agent to design a custom hospital simulation blueprint from natural language requirements, or auto-provision it in one call' },
+  { name: 'hebrah_consult_architect', description: 'Alias for env_consult_architect — consult the isolated Conversational Environment Architect Agent to map out synthetic hospital departments, clinical packs, and database add-ons' },
+  { name: 'env_admit_patients', description: 'Dynamically admit and generate a new diversified synthetic patient cohort in an active environment by department, diagnosis pathway, treatment modality, or acuity' },
   { name: 'env_connect', description: 'Connect this session to an existing isolated health environment and set active environment context' },
   { name: 'env_get', description: 'Get details, connection endpoints, and database module status for an isolated environment' },
   { name: 'env_list_tables', description: 'Inspect all database tables, live row counts, and column schemas in the environment isolated database' },
   { name: 'env_query_db', description: 'Execute a read-only SQL query against an environment database module via credential-blind proxy' },
   { name: 'env_record_outcome', description: 'Persist a structured clinical finding or outcome into the environment app_outcomes table (protected by inbound DLP filter)' },
   { name: 'env_trigger_scenario', description: 'Trigger a synthetic clinical workflow scenario with live HL7 WebSocket alerts' },
-  { name: 'env_list_patients', description: 'List synthetic patients in the environment EHR' },
+  { name: 'env_list_patients', description: 'List synthetic patients in the environment EHR with multi-facet filtering by department, diagnosis pathway, treatment modality, or acuity' },
   { name: 'env_get_patient_chart', description: 'Retrieve a complete synthetic patient chart' },
   { name: 'env_get_logs', description: 'Retrieve tamper-evident activity and audit logs for the isolated health environment' },
   { name: 'env_pause', description: 'Pause an environment to suspend compute and reduce hourly rate to $0.00/hr' },
@@ -729,6 +785,11 @@ export async function callTool(
           patient_cohort: args.patient_cohort ?? args.patientCohort ?? 'geriatric',
           addons
         }
+        if (Array.isArray(args.departments)) body.departments = args.departments
+        if (Array.isArray(args.diagnosis_pathways ?? args.diagnosisPathways)) body.diagnosis_pathways = args.diagnosis_pathways ?? args.diagnosisPathways
+        if (Array.isArray(args.treatment_modalities ?? args.treatmentModalities)) body.treatment_modalities = args.treatment_modalities ?? args.treatmentModalities
+        if (Array.isArray(args.acuity_levels ?? args.acuityLevels)) body.acuity_levels = args.acuity_levels ?? args.acuityLevels
+        if (Array.isArray(args.capability_packs ?? args.capabilityPacks)) body.capability_packs = args.capability_packs ?? args.capabilityPacks
         if (args.patient_count ?? args.patientCount) body.patient_count = Number(args.patient_count ?? args.patientCount)
         if (args.bed_count ?? args.bedCount) body.bed_count = Number(args.bed_count ?? args.bedCount)
         const result = await agentApiFetch<{ id: string }>(auth, '/v1/environments', {
@@ -739,6 +800,47 @@ export async function callTool(
           session.activeEnvironmentId = result.id
         }
         return result
+      }
+      case 'env_consult_architect':
+      case 'hebrah_consult_architect': {
+        const message = String(args.message ?? '').trim()
+        if (!message) throw new Error('message is required for env_consult_architect')
+        const body: Record<string, unknown> = {
+          message,
+          channel: 'agent_mcp',
+          auto_provision: Boolean(args.auto_provision ?? args.autoProvision)
+        }
+        if (args.session_id ?? args.sessionId) {
+          body.session_id = String(args.session_id ?? args.sessionId).trim()
+        }
+        const result = await agentApiFetch<{ provisioned_environment?: { id?: string } }>(
+          auth,
+          '/v1/environments/architect/chat',
+          {
+            method: 'POST',
+            body: JSON.stringify(body)
+          }
+        )
+        if (result?.provisioned_environment?.id) {
+          session.activeEnvironmentId = result.provisioned_environment.id
+        }
+        return result
+      }
+      case 'env_admit_patients': {
+        const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
+        if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
+        const encodedEnvId = safeId(rawEnvId, 'environment_id')
+        const body: Record<string, unknown> = {
+          count: Number(args.count ?? 10)
+        }
+        if (Array.isArray(args.departments)) body.departments = args.departments
+        if (Array.isArray(args.diagnosis_pathways ?? args.diagnosisPathways)) body.diagnosis_pathways = args.diagnosis_pathways ?? args.diagnosisPathways
+        if (Array.isArray(args.treatment_modalities ?? args.treatmentModalities)) body.treatment_modalities = args.treatment_modalities ?? args.treatmentModalities
+        if (Array.isArray(args.acuity_levels ?? args.acuityLevels)) body.acuity_levels = args.acuity_levels ?? args.acuityLevels
+        return agentApiFetch(auth, `/v1/environments/${encodedEnvId}/ehr/patients/generate`, {
+          method: 'POST',
+          body: JSON.stringify(body)
+        })
       }
       case 'env_connect': {
         const rawEnvId = String(args.environment_id ?? args.environmentId ?? '').trim()
@@ -838,6 +940,10 @@ export async function callTool(
         if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
         const encodedEnvId = safeId(rawEnvId, 'environment_id')
         const params = new URLSearchParams()
+        if (args.department) params.set('department', String(args.department).trim())
+        if (args.diagnosis) params.set('diagnosis', String(args.diagnosis).trim())
+        if (args.treatment_modality ?? args.treatmentModality) params.set('treatment_modality', String(args.treatment_modality ?? args.treatmentModality).trim())
+        if (args.acuity_level ?? args.acuityLevel) params.set('acuity_level', String(args.acuity_level ?? args.acuityLevel).trim())
         if (args.limit != null) params.set('limit', String(Number(args.limit)))
         const qs = params.toString() ? `?${params.toString()}` : ''
         return agentApiFetch(auth, `/v1/environments/${encodedEnvId}/ehr/patients${qs}`)
@@ -1790,6 +1896,11 @@ export async function callTool(
         patient_cohort: args.patient_cohort ?? args.patientCohort ?? 'geriatric',
         addons
       }
+      if (Array.isArray(args.departments)) body.departments = args.departments
+      if (Array.isArray(args.diagnosis_pathways ?? args.diagnosisPathways)) body.diagnosis_pathways = args.diagnosis_pathways ?? args.diagnosisPathways
+      if (Array.isArray(args.treatment_modalities ?? args.treatmentModalities)) body.treatment_modalities = args.treatment_modalities ?? args.treatmentModalities
+      if (Array.isArray(args.acuity_levels ?? args.acuityLevels)) body.acuity_levels = args.acuity_levels ?? args.acuityLevels
+      if (Array.isArray(args.capability_packs ?? args.capabilityPacks)) body.capability_packs = args.capability_packs ?? args.capabilityPacks
       if (args.patient_count ?? args.patientCount) body.patient_count = Number(args.patient_count ?? args.patientCount)
       if (args.bed_count ?? args.bedCount) body.bed_count = Number(args.bed_count ?? args.bedCount)
       const result = await dashboardFetch<{ id: string }>(auth.pat, '/api/environments', {
@@ -1800,6 +1911,47 @@ export async function callTool(
         session.activeEnvironmentId = result.id
       }
       return result
+    }
+    case 'env_consult_architect':
+    case 'hebrah_consult_architect': {
+      const message = String(args.message ?? '').trim()
+      if (!message) throw new Error('message is required for env_consult_architect')
+      const body: Record<string, unknown> = {
+        message,
+        channel: 'agent_mcp',
+        auto_provision: Boolean(args.auto_provision ?? args.autoProvision)
+      }
+      if (args.session_id ?? args.sessionId) {
+        body.session_id = String(args.session_id ?? args.sessionId).trim()
+      }
+      const result = await dashboardFetch<{ provisioned_environment?: { id?: string } }>(
+        auth.pat,
+        '/api/environments/architect/chat',
+        {
+          method: 'POST',
+          body: JSON.stringify(body)
+        }
+      )
+      if (result?.provisioned_environment?.id) {
+        session.activeEnvironmentId = result.provisioned_environment.id
+      }
+      return result
+    }
+    case 'env_admit_patients': {
+      const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
+      if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
+      const encodedEnvId = safeId(rawEnvId, 'environment_id')
+      const body: Record<string, unknown> = {
+        count: Number(args.count ?? 10)
+      }
+      if (Array.isArray(args.departments)) body.departments = args.departments
+      if (Array.isArray(args.diagnosis_pathways ?? args.diagnosisPathways)) body.diagnosis_pathways = args.diagnosis_pathways ?? args.diagnosisPathways
+      if (Array.isArray(args.treatment_modalities ?? args.treatmentModalities)) body.treatment_modalities = args.treatment_modalities ?? args.treatmentModalities
+      if (Array.isArray(args.acuity_levels ?? args.acuityLevels)) body.acuity_levels = args.acuity_levels ?? args.acuityLevels
+      return dashboardFetch(auth.pat, `/api/environments/${encodedEnvId}/ehr/patients/generate`, {
+        method: 'POST',
+        body: JSON.stringify(body)
+      })
     }
     case 'env_connect': {
       const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
@@ -1886,6 +2038,10 @@ export async function callTool(
       if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
       const encodedEnvId = safeId(rawEnvId, 'environment_id')
       const params = new URLSearchParams()
+      if (args.department) params.set('department', String(args.department).trim())
+      if (args.diagnosis) params.set('diagnosis', String(args.diagnosis).trim())
+      if (args.treatment_modality ?? args.treatmentModality) params.set('treatment_modality', String(args.treatment_modality ?? args.treatmentModality).trim())
+      if (args.acuity_level ?? args.acuityLevel) params.set('acuity_level', String(args.acuity_level ?? args.acuityLevel).trim())
       if (args.limit != null) params.set('limit', String(Number(args.limit)))
       const qs = params.toString() ? `?${params.toString()}` : ''
       return dashboardFetch(auth.pat, `/api/environments/${encodedEnvId}/ehr/patients${qs}`)

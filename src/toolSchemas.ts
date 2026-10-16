@@ -244,9 +244,37 @@ export function listToolInputSchema(toolName: string) {
             enum: ['general', 'geriatric', 'pediatric', 'cardiac', 'mixed'] as const,
             description: 'Synthetic patient cohort'
           },
+          departments: { type: 'array' as const, items: { type: 'string' as const }, description: 'Hospital departments (emergency, icu, cardiology, oncology, obstetrics, pediatrics, behavioral, ambulatory)' },
+          diagnosis_pathways: { type: 'array' as const, items: { type: 'string' as const }, description: 'Specific clinical archetype IDs' },
+          treatment_modalities: { type: 'array' as const, items: { type: 'string' as const }, description: 'Treatment modalities' },
+          acuity_levels: { type: 'array' as const, items: { type: 'string' as const }, description: 'Acuity levels (routine, urgent, emergent, critical)' },
+          capability_packs: { type: 'array' as const, items: { type: 'string' as const }, description: 'Base clinical capability packs (vocab_clinical, fhir_bulk_export, imaging_dicom, device_ieee11073, hie_ccda_xds, emerging_sdoh_genomics)' },
           addons: { type: 'array' as const, items: { type: 'string' as const }, description: 'Database pack modules (postgres, sqlite, vectordb, neo4j)' },
           patient_count: { type: 'number' as const, description: 'Initial patient pool size (10-1000)' },
           bed_count: { type: 'number' as const, description: 'Inpatient bed capacity (0-200)' }
+        }
+      }
+    case 'env_consult_architect':
+    case 'hebrah_consult_architect':
+      return {
+        type: 'object' as const,
+        required: ['message'],
+        properties: {
+          message: { type: 'string' as const, description: 'Natural language description of your clinical integration or AI agent testing needs' },
+          session_id: { type: 'string' as const, description: 'Optional architect session ID to continue a multi-turn blueprint refinement' },
+          auto_provision: { type: 'boolean' as const, description: 'If true, automatically provisions the synthesized EnvironmentBlueprint when ready' }
+        }
+      }
+    case 'env_admit_patients':
+      return {
+        type: 'object' as const,
+        properties: {
+          environment_id: { type: 'string' as const, description: 'Environment ID (defaults to active session environment)' },
+          count: { type: 'number' as const, description: 'Number of new synthetic patients to admit (1-100, default: 10)' },
+          departments: { type: 'array' as const, items: { type: 'string' as const }, description: 'Hospital departments' },
+          diagnosis_pathways: { type: 'array' as const, items: { type: 'string' as const }, description: 'Specific clinical archetype IDs' },
+          treatment_modalities: { type: 'array' as const, items: { type: 'string' as const }, description: 'Treatment modalities' },
+          acuity_levels: { type: 'array' as const, items: { type: 'string' as const }, description: 'Acuity levels (routine, urgent, emergent, critical)' }
         }
       }
     case 'env_connect':
@@ -302,7 +330,7 @@ export function listToolInputSchema(toolName: string) {
         required: ['scenario'],
         properties: {
           environment_id: { type: 'string' as const, description: 'Environment ID (defaults to active session environment)' },
-          scenario: { type: 'string' as const, enum: ['er_arrival', 'lab_critical', 'discharge', 'code_blue', 'vitals_spike'] as const, description: 'Clinical scenario name' },
+          scenario: { type: 'string' as const, enum: ['er_arrival', 'lab_critical', 'discharge', 'code_blue', 'vitals_spike', 'icu_sepsis_deterioration', 'ventilator_desaturation_alarm'] as const, description: 'Clinical scenario name' },
           patient_id: { type: 'string' as const, description: 'Optional target patient ID' },
           notes: { type: 'string' as const, description: 'Optional clinical notes' }
         }
@@ -312,6 +340,10 @@ export function listToolInputSchema(toolName: string) {
         type: 'object' as const,
         properties: {
           environment_id: { type: 'string' as const, description: 'Environment ID (defaults to active session environment)' },
+          department: { type: 'string' as const, description: 'Filter by hospital department (emergency, icu, cardiology, oncology, obstetrics, pediatrics, behavioral, ambulatory)' },
+          diagnosis: { type: 'string' as const, description: 'Filter by diagnosis pathway, ICD-10 code, or SNOMED CT code' },
+          treatment_modality: { type: 'string' as const, description: 'Filter by treatment modality' },
+          acuity_level: { type: 'string' as const, description: 'Filter by acuity level (routine, urgent, emergent, critical)' },
           limit: { type: 'number' as const, description: 'Maximum number of patients to return (1-200, default: 50)' }
         }
       }
