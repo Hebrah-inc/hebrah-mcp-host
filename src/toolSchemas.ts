@@ -221,6 +221,42 @@ export function listToolInputSchema(toolName: string) {
           ecg_id: { type: 'string' as const }
         }
       }
+    case 'list_dicom_imaging_records':
+      return {
+        type: 'object' as const,
+        properties: {
+          modality: {
+            type: 'string' as const,
+            enum: ['DX', 'CT', 'MR', 'XA', 'US', 'MG', 'PT'] as const,
+            description: 'Filter by DICOM modality (DX, CT, MR, XA, US, MG, PT)'
+          },
+          archetype_id: {
+            type: 'string' as const,
+            description: 'Filter by clinical archetype ID (e.g. cardiology_center, neurology_stroke, hospital_system)'
+          },
+          limit: { type: 'number' as const },
+          offset: { type: 'number' as const }
+        }
+      }
+    case 'get_dicom_imaging_record':
+      return {
+        type: 'object' as const,
+        required: ['exemplar_id'],
+        properties: {
+          exemplar_id: { type: 'string' as const, description: 'Exemplar ID (e.g. dicom-ct-001, dicom-mr-001, dicom-xa-001)' }
+        }
+      }
+    case 'attach_dicom_imaging_exemplar':
+      return {
+        type: 'object' as const,
+        required: ['environment_id', 'patient_id'],
+        properties: {
+          environment_id: { type: 'string' as const, description: 'Target isolated environment ID' },
+          patient_id: { type: 'string' as const, description: 'Target patient ID in the environment' },
+          exemplar_id: { type: 'string' as const, description: 'Optional open-data DICOM exemplar ID (e.g. dicom-ct-001)' },
+          modality: { type: 'string' as const, description: 'Optional DICOM modality (CT, MR, DX, XA, US, MG, PT)' }
+        }
+      }
     case 'env_list':
       return {
         type: 'object' as const,

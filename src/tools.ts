@@ -632,8 +632,8 @@ export const toolDefinitions = [
   { name: 'get_synthetic_ehr_profile', description: 'Vendor model + endpoints for active connection synthetic EHR' },
   { name: 'list_ehr_base_models', description: 'List Epic/Cerner/Athena base EHR model packs' },
   { name: 'reset_synthetic_ehr_data', description: 'Re-seed VM synthetic EHR store from model pack' },
-  { name: 'list_research_packs', description: 'List Research Packs (e.g. medicare_utilization_v1 CMS claims calibration, ptbxl_ecg_v1 ECG cohort)' },
-  { name: 'get_research_pack', description: 'Get Research Pack metadata + CMS benchmark snapshot or PTB-XL attribution' },
+  { name: 'list_research_packs', description: 'List Research Packs (e.g. medicare_utilization_v1 CMS claims calibration, ptbxl_ecg_v1 ECG cohort, dicom_imaging_v1 Open DICOM medical imaging)' },
+  { name: 'get_research_pack', description: 'Get Research Pack metadata + CMS benchmark snapshot, PTB-XL attribution, or Open DICOM imaging attribution' },
   { name: 'apply_research_pack', description: 'Apply a Research Pack to the active sandbox connection and remount seed (Medicare only; not PTB-XL)' },
   { name: 'get_research_pack_kpis', description: 'Sandbox claim KPIs for a Research Pack (DRG mix, denial rate, Medicare share)' },
   { name: 'compare_research_pack', description: 'Compare sandbox KPIs to vendored CMS open-data benchmark for a Research Pack' },
@@ -641,6 +641,9 @@ export const toolDefinitions = [
   { name: 'get_ptbxl_ecg_record', description: 'Get PTB-XL ECG metadata + suggested conditions (no full waveform samples)' },
   { name: 'get_ptbxl_ecg_waveform_meta', description: 'PTB-XL waveform metadata + truncated lead preview (avoid huge MCP payloads)' },
   { name: 'attach_ptbxl_ecg_exemplar', description: 'Attach a PTB-XL ECG exemplar to a sandbox cardiology patient (research label only)' },
+  { name: 'list_dicom_imaging_records', description: 'List open-licensed de-identified DICOM medical imaging exemplars from dicom_imaging_v1 (modalities: DX, CT, MR, XA, US, MG, PT) with CC BY / CC0 citations and PS3.15 de-identification metadata' },
+  { name: 'get_dicom_imaging_record', description: 'Get full metadata, Window/Level presets, and open-data citation for a dicom_imaging_v1 exemplar' },
+  { name: 'attach_dicom_imaging_exemplar', description: 'Attach a de-identified open-data DICOM imaging exemplar to a patient in an isolated health environment via STOW-RS' },
   { name: 'get_connection_developer_doc', description: 'Rendered markdown integration reference for active connection' },
   { name: 'propose_custom_ehr_model', description: 'Ingest doc text/URL and generate a BYOM draft model pack (apply via dashboard review gate)' },
   { name: 'get_connection_credentials', description: 'Read sandbox credentials metadata (webhook URL, secret configured, Docker URL hints). Pass localAppUrl or port for demo-app suggestions.' },
@@ -1708,6 +1711,37 @@ export async function callTool(
           patient_id: String(patientId),
           ecg_id: ecgId,
           connection_id: connectionId ? String(connectionId) : undefined
+        })
+      })
+    }
+    case 'list_dicom_imaging_records': {
+      const params = new URLSearchParams()
+      if (args.modality) params.set('modality', String(args.modality))
+      if (args.archetype_id ?? args.archetypeId) params.set('archetype_id', String(args.archetype_id ?? args.archetypeId))
+      if (args.limit != null) params.set('limit', String(args.limit))
+      if (args.offset != null) params.set('offset', String(args.offset))
+      const qs = params.toString()
+      return ultraFetch(auth.orgId, `/v1/sandbox/research-packs/dicom_imaging_v1/records${qs ? `?${qs}` : ''}`)
+    }
+    case 'get_dicom_imaging_record': {
+      const exemplarId = args.exemplar_id ?? args.exemplarId
+      if (!exemplarId) throw new Error('exemplar_id required for get_dicom_imaging_record')
+      return ultraFetch(auth.orgId, `/v1/sandbox/research-packs/dicom_imaging_v1/records/${safeId(String(exemplarId), 'exemplar_id')}`)
+    }
+    case 'attach_dicom_imaging_exemplar': {
+      const envId = args.environment_id ?? args.environmentId
+      const patientId = args.patient_id ?? args.patientId
+      const exemplarId = args.exemplar_id ?? args.exemplarId
+      const modality = args.modality
+      if (!envId || !patientId) {
+        throw new Error('environment_id and patient_id required for attach_dicom_imaging_exemplar')
+      }
+      return ultraFetch(auth.orgId, `/v1/environments/${safeId(String(envId), 'environment_id')}/dicomweb/studies`, {
+        method: 'POST',
+        body: JSON.stringify({
+          patient_id: String(patientId),
+          exemplar_id: exemplarId ? String(exemplarId) : undefined,
+          modality: modality ? String(modality) : 'CT'
         })
       })
     }
