@@ -409,6 +409,30 @@ export function listToolInputSchema(toolName: string) {
           environment_id: { type: 'string' as const, description: 'Environment ID (defaults to active session environment)' }
         }
       }
+    case 'env_consult_studio':
+      return {
+        type: 'object' as const,
+        required: ['message'],
+        properties: {
+          environment_id: { type: 'string' as const, description: 'Environment ID (defaults to active session environment)' },
+          message: { type: 'string' as const, description: 'Clinical data, open-data evidence, or SQL/FHIR/DICOM/CDS exploration prompt for the Per-Environment AI Studio (locked to this environment; external skill/tool installation requests are blocked)' },
+          session_id: { type: 'string' as const, description: 'Optional Studio session ID to continue a multi-turn exploration thread' }
+        }
+      }
+    case 'env_search_clinical_evidence':
+      return {
+        type: 'object' as const,
+        properties: {
+          environment_id: { type: 'string' as const, description: 'Optional Environment ID (defaults to active session environment)' },
+          query: { type: 'string' as const, description: 'Optional search keyword across clinical vignettes, guidelines, calculators, and PrimeKG pathways (e.g. sepsis, qSOFA, NSCLC, CHA2DS2-VASc)' },
+          subpack: {
+            type: 'string' as const,
+            enum: ['all', 'open_clinical_vignettes', 'open_guidelines_vector', 'open_biomedical_kg', 'open_clinical_calculators', 'dicom_imaging_v1'] as const,
+            description: 'Optional open-data sub-pack filter (default: all)'
+          },
+          specialty: { type: 'string' as const, description: 'Optional clinical specialty filter (e.g. icu_critical_care, cardiology_center, oncology_infusion)' }
+        }
+      }
   }
 
   if (

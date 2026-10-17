@@ -281,7 +281,9 @@ export const AGENT_TOOL_NAMES = [
   'env_get_patient_chart',
   'env_get_logs',
   'env_pause',
-  'env_resume'
+  'env_resume',
+  'env_consult_studio',
+  'env_search_clinical_evidence'
 ] as const
 
 export const agentToolDefinitions = [
@@ -534,6 +536,36 @@ export const agentToolDefinitions = [
         environment_id: { type: 'string', description: 'Environment ID (defaults to active session environment)' }
       }
     }
+  },
+  {
+    name: 'env_consult_studio',
+    description: 'Consult the Per-Environment Isolated GCP AI Studio to explore synthetic cohorts, open-data clinical vignettes/guidelines/calculators/PrimeKG pathways, or execute read-only SQL/FHIR/DICOM/CDS checks (strictly locked to the environment; external skill/tool installation requests are blocked)',
+    inputSchema: {
+      type: 'object',
+      required: ['message'],
+      properties: {
+        environment_id: { type: 'string', description: 'Environment ID (defaults to active session environment)' },
+        message: { type: 'string', description: 'Natural language question or clinical data exploration prompt' },
+        session_id: { type: 'string', description: 'Optional Studio session ID to continue a multi-turn thread' }
+      }
+    }
+  },
+  {
+    name: 'env_search_clinical_evidence',
+    description: 'Search the Open-Data Clinical Knowledge & Evidence Enrichment Pack (clinical_knowledge_v1 + dicom_imaging_v1: vignettes, clinical guidelines, PrimeKG biomedical graph pathways, calculators, and de-identified DICOM exemplars)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        environment_id: { type: 'string', description: 'Optional Environment ID (defaults to active session environment)' },
+        query: { type: 'string', description: 'Optional keyword search (e.g. sepsis, qSOFA, NSCLC, CHA2DS2-VASc)' },
+        subpack: {
+          type: 'string',
+          enum: ['all', 'open_clinical_vignettes', 'open_guidelines_vector', 'open_biomedical_kg', 'open_clinical_calculators', 'dicom_imaging_v1'],
+          description: 'Optional open-data sub-pack filter (default: all)'
+        },
+        specialty: { type: 'string', description: 'Optional specialty filter (e.g. icu_critical_care, cardiology_center, oncology_infusion)' }
+      }
+    }
   }
 ] as const
 
@@ -632,8 +664,8 @@ export const toolDefinitions = [
   { name: 'get_synthetic_ehr_profile', description: 'Vendor model + endpoints for active connection synthetic EHR' },
   { name: 'list_ehr_base_models', description: 'List Epic/Cerner/Athena base EHR model packs' },
   { name: 'reset_synthetic_ehr_data', description: 'Re-seed VM synthetic EHR store from model pack' },
-  { name: 'list_research_packs', description: 'List Research Packs (e.g. medicare_utilization_v1 CMS claims calibration, ptbxl_ecg_v1 ECG cohort, dicom_imaging_v1 Open DICOM medical imaging)' },
-  { name: 'get_research_pack', description: 'Get Research Pack metadata + CMS benchmark snapshot, PTB-XL attribution, or Open DICOM imaging attribution' },
+  { name: 'list_research_packs', description: 'List Research Packs (e.g. medicare_utilization_v1 CMS claims calibration, ptbxl_ecg_v1 ECG cohort, dicom_imaging_v1 Open DICOM medical imaging, clinical_knowledge_v1 Open-Data Clinical Knowledge & Evidence)' },
+  { name: 'get_research_pack', description: 'Get Research Pack metadata + CMS benchmark snapshot, PTB-XL attribution, Open DICOM imaging attribution, or Open-Data Clinical Knowledge pack' },
   { name: 'apply_research_pack', description: 'Apply a Research Pack to the active sandbox connection and remount seed (Medicare only; not PTB-XL)' },
   { name: 'get_research_pack_kpis', description: 'Sandbox claim KPIs for a Research Pack (DRG mix, denial rate, Medicare share)' },
   { name: 'compare_research_pack', description: 'Compare sandbox KPIs to vendored CMS open-data benchmark for a Research Pack' },
@@ -668,7 +700,9 @@ export const toolDefinitions = [
   { name: 'env_get_patient_chart', description: 'Retrieve a complete synthetic patient chart' },
   { name: 'env_get_logs', description: 'Retrieve tamper-evident activity and audit logs for the isolated health environment' },
   { name: 'env_pause', description: 'Pause an environment to suspend compute and reduce hourly rate to $0.00/hr' },
-  { name: 'env_resume', description: 'Resume a paused environment and restore compute services' }
+  { name: 'env_resume', description: 'Resume a paused environment and restore compute services' },
+  { name: 'env_consult_studio', description: 'Consult the Per-Environment Isolated GCP AI Studio to explore synthetic cohorts, open-data clinical vignettes/guidelines/calculators/PrimeKG pathways, or execute read-only SQL/FHIR/DICOM/CDS checks (strictly locked to the environment; external skill/tool installation requests are blocked)' },
+  { name: 'env_search_clinical_evidence', description: 'Search the Open-Data Clinical Knowledge & Evidence Enrichment Pack (clinical_knowledge_v1 + dicom_imaging_v1: vignettes, clinical guidelines, PrimeKG biomedical graph pathways, calculators, and de-identified DICOM exemplars)' }
 ]
 
 export async function callTool(
@@ -985,6 +1019,37 @@ export async function callTool(
         return agentApiFetch(auth, `/v1/environments/${encodedEnvId}/resume`, {
           method: 'POST'
         })
+      }
+      case 'env_consult_studio': {
+        const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
+        if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
+        const encodedEnvId = safeId(rawEnvId, 'environment_id')
+        const message = String(args.message ?? '').trim()
+        if (!message) throw new Error('message is required for env_consult_studio')
+        const body: Record<string, unknown> = {
+          message,
+          channel: 'agent_mcp'
+        }
+        if (args.session_id ?? args.sessionId) {
+          body.session_id = String(args.session_id ?? args.sessionId).trim()
+        }
+        return agentApiFetch(auth, `/v1/environments/${encodedEnvId}/studio/chat`, {
+          method: 'POST',
+          body: JSON.stringify(body)
+        })
+      }
+      case 'env_search_clinical_evidence': {
+        const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
+        const query = String(args.query ?? '').trim().toLowerCase()
+        const subpack = String(args.subpack ?? 'all').trim()
+        const specialty = String(args.specialty ?? '').trim().toLowerCase()
+        const catalog = rawEnvId
+          ? await agentApiFetch<Record<string, unknown>>(auth, `/v1/environments/${safeId(rawEnvId, 'environment_id')}/open-data/catalog`)
+          : await agentApiFetch<Record<string, unknown>>(auth, '/v1/sandbox/research-packs/clinical_knowledge_v1')
+        return {
+          ...catalog,
+          filter_applied: { query: query || null, subpack, specialty: specialty || null }
+        }
       }
       default:
         throw new Error(`Unknown agent tool: ${name}`)
@@ -2114,6 +2179,37 @@ export async function callTool(
       return dashboardFetch(auth.pat, `/api/environments/${encodedEnvId}/resume`, {
         method: 'POST'
       })
+    }
+    case 'env_consult_studio': {
+      const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
+      if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
+      const encodedEnvId = safeId(rawEnvId, 'environment_id')
+      const message = String(args.message ?? '').trim()
+      if (!message) throw new Error('message is required for env_consult_studio')
+      const body: Record<string, unknown> = {
+        message,
+        channel: 'agent_mcp'
+      }
+      if (args.session_id ?? args.sessionId) {
+        body.session_id = String(args.session_id ?? args.sessionId).trim()
+      }
+      return dashboardFetch(auth.pat, `/api/environments/${encodedEnvId}/studio/chat`, {
+        method: 'POST',
+        body: JSON.stringify(body)
+      })
+    }
+    case 'env_search_clinical_evidence': {
+      const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
+      const query = String(args.query ?? '').trim().toLowerCase()
+      const subpack = String(args.subpack ?? 'all').trim()
+      const specialty = String(args.specialty ?? '').trim().toLowerCase()
+      const catalog = rawEnvId
+        ? await dashboardFetch<Record<string, unknown>>(auth.pat, `/api/environments/${safeId(rawEnvId, 'environment_id')}/open-data`)
+        : await ultraFetch<Record<string, unknown>>(auth.orgId, '/v1/sandbox/research-packs/clinical_knowledge_v1')
+      return {
+        ...catalog,
+        filter_applied: { query: query || null, subpack, specialty: specialty || null }
+      }
     }
     default:
       throw new Error(`Unknown tool: ${name}`)
