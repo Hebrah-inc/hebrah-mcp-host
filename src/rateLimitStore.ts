@@ -30,7 +30,8 @@ export async function incrementRateCounter(
   key: string,
   limit: number,
   windowSeconds: number,
-  memoryFallback: () => void
+  memoryFallback: () => void,
+  label = 'this action'
 ): Promise<void> {
   const redis = await getRedis()
   if (!redis) {
@@ -45,7 +46,7 @@ export async function incrementRateCounter(
       await redis.expire(redisKey, Math.max(1, windowSeconds))
     }
     if (count > limit) {
-      throw new Error(`Rate limit exceeded for ${key}. Try again later.`)
+      throw new Error(`Rate limit exceeded for ${label}. Try again later.`)
     }
   } catch (error) {
     if (error instanceof Error && error.message.startsWith('Rate limit exceeded')) {

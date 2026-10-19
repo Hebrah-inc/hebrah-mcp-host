@@ -35,6 +35,8 @@ function connectionEnvSnippet(connectionId: string): string {
   ].join('\n')
 }
 
+const SAFE_CONNECTION_ID_RE = /^[a-zA-Z0-9._-]{1,128}$/
+
 export function buildSdkReference(connectionId?: string): SdkReferenceResult {
   const result: SdkReferenceResult = {
     package: NODE_SDK_PACKAGE,
@@ -45,11 +47,15 @@ export function buildSdkReference(connectionId?: string): SdkReferenceResult {
   }
 
   if (connectionId) {
-    result.connectionEnv = {
-      connectionId,
-      snippet: connectionEnvSnippet(connectionId)
+    const trimmed = connectionId.trim()
+    if (!SAFE_CONNECTION_ID_RE.test(trimmed)) {
+      throw new Error('Invalid connectionId format')
     }
-    result.markdown = `${NODE_SDK_REFERENCE_MARKDOWN}\n## Connection-scoped environment\n\n\`\`\`bash\n${connectionEnvSnippet(connectionId)}\`\`\`\n`
+    result.connectionEnv = {
+      connectionId: trimmed,
+      snippet: connectionEnvSnippet(trimmed)
+    }
+    result.markdown = `${NODE_SDK_REFERENCE_MARKDOWN}\n## Connection-scoped environment\n\n\`\`\`bash\n${connectionEnvSnippet(trimmed)}\`\`\`\n`
   }
 
   return result

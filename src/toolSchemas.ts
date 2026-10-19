@@ -272,8 +272,8 @@ export function listToolInputSchema(toolName: string) {
           name: { type: 'string' as const, description: 'Clinic environment name' },
           clinic_type: {
             type: 'string' as const,
-            enum: ['ambulatory', 'hospital', 'cardiology', 'ambulatory_clinic', 'hospital_system', 'cardiology_center'] as const,
-            description: 'Clinic template (ambulatory, hospital, cardiology)'
+            enum: CLINICAL_ARCHETYPE_VALUES,
+            description: 'Clinical archetype (16 archetypes supported, e.g. ambulatory_clinic, hospital_system, cardiology_center, emergency_trauma, icu_critical_care, oncology_infusion, orthopedic_surgery, labor_delivery_obgyn, pediatrics_neonatal, behavioral_health, neurology_stroke, nephrology_dialysis, gastroenterology_endoscopy, pulmonology_sleep, rehabilitation_snf, urgent_care_network)'
           },
           patient_cohort: {
             type: 'string' as const,
@@ -433,6 +433,27 @@ export function listToolInputSchema(toolName: string) {
           specialty: { type: 'string' as const, description: 'Optional clinical specialty filter (e.g. icu_critical_care, cardiology_center, oncology_infusion)' }
         }
       }
+    case 'get_wallet_status':
+    case 'get_usage_forecast':
+      return emptySchema
+    case 'set_auto_reload':
+      return {
+        type: 'object' as const,
+        required: ['enabled'],
+        properties: {
+          enabled: { type: 'boolean' as const, description: 'Whether auto-reload is enabled' },
+          threshold_cents: { type: 'number' as const, description: 'Balance threshold in cents (minimum 100)' },
+          reload_amount_cents: { type: 'number' as const, description: 'Reload amount in cents (minimum 500)' }
+        }
+      }
+    case 'create_topup':
+      return {
+        type: 'object' as const,
+        required: ['amount_cents'],
+        properties: {
+          amount_cents: { type: 'number' as const, description: 'Top-up amount in cents (minimum 500 = $5.00)' }
+        }
+      }
   }
 
   if (
@@ -450,3 +471,25 @@ export function listToolInputSchema(toolName: string) {
 
   return emptySchema
 }
+
+export const CLINICAL_ARCHETYPE_VALUES = [
+  'ambulatory',
+  'hospital',
+  'cardiology',
+  'ambulatory_clinic',
+  'hospital_system',
+  'cardiology_center',
+  'emergency_trauma',
+  'icu_critical_care',
+  'oncology_infusion',
+  'orthopedic_surgery',
+  'labor_delivery_obgyn',
+  'pediatrics_neonatal',
+  'behavioral_health',
+  'neurology_stroke',
+  'nephrology_dialysis',
+  'gastroenterology_endoscopy',
+  'pulmonology_sleep',
+  'rehabilitation_snf',
+  'urgent_care_network'
+] as const

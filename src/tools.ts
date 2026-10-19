@@ -13,7 +13,9 @@ import {
 } from './guardrails.js'
 import { assertCanPromoteToLive } from './promotionGate.js'
 import { buildSdkReference } from './sdkReference.js'
+import { listToolInputSchema } from './toolSchemas.js'
 import {
+  assertSafeWebhookOrCallbackUrl,
   parseLocalAppUrlFromArgs,
   resolveWebhookUrlFromSetArgs,
   suggestedWebhookUrls
@@ -147,8 +149,11 @@ export function assertSafeSidecarUrl(rawUrl: string): string {
 const SECRET_PATTERNS: Array<[RegExp, string]> = [
   [/\bhb_(?:live|test|pat|conn|claim)_[A-Za-z0-9_-]+/g, 'hb_[REDACTED]'],
   [/\bhbsec_[A-Za-z0-9_-]+/g, 'hbsec_[REDACTED]'],
+  [/\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]+/g, 'sk_[REDACTED]'],
+  [/\bwhsec_[A-Za-z0-9]+/g, 'whsec_[REDACTED]'],
   [/\benc:v1:[A-Za-z0-9+/=_:-]+/g, 'enc:v1:[REDACTED]'],
   [/(Authorization\s*:\s*Bearer\s+)[^\s"',;]+/gi, '$1[REDACTED]'],
+  [/(Bearer\s+)(?:hb_[A-Za-z0-9_-]+|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)/gi, '$1[REDACTED]'],
   [/(PrivateKey\s*=\s*)[^\s\r\n]+/gi, '$1[REDACTED]']
 ]
 
@@ -156,6 +161,12 @@ export function redactSecrets(text: string): string {
   let out = text
   for (const [pattern, replacement] of SECRET_PATTERNS) {
     out = out.replace(pattern, replacement)
+  }
+  if (config.mcpInternalSecret && config.mcpInternalSecret.length >= 8 && out.includes(config.mcpInternalSecret)) {
+    out = out.split(config.mcpInternalSecret).join('[REDACTED_INTERNAL_SECRET]')
+  }
+  if (config.orchestratorSecret && config.orchestratorSecret.length >= 8 && out.includes(config.orchestratorSecret)) {
+    out = out.split(config.orchestratorSecret).join('[REDACTED_ORCHESTRATOR_SECRET]')
   }
   return out
 }
@@ -287,7 +298,7 @@ export const AGENT_TOOL_NAMES = [
 ] as const
 
 export const agentToolDefinitions = [
-  { name: 'discover_data_sources', description: 'List every connector target with required scopes, tiers, and health' },
+  { name: 'discover_data_sources', description: 'List every connector target with required scopes, tiers, and health', inputSchema: listToolInputSchema('discover_data_sources') },
   {
     name: 'connect_to_data_source',
     description: 'Open a scoped, TTL-bound connection to a target (target_id + scopes from discovery); the agent never receives the source credential',
@@ -305,21 +316,22 @@ export const agentToolDefinitions = [
   {
     name: 'query_data_source',
     description: 'Run one read-only, scope-enforced query; returns rows, cost_cents, bytes_egressed, and audit_event_id',
-    inputSchema: {
-      type: 'object',
-      required: ['sql'],
-      properties: {
-        connectionId: { type: 'string', description: 'Connection ID (optional; defaults to the current session connection)' },
-        sql: { type: 'string', description: 'One read-only scoped query' }
-      }
-    }
+    inputSchema: listToolInputSchema('query_data_source')
   },
-  { name: 'get_data_source_audit', description: 'Read the hash-chained audit events for a connection' },
-  { name: 'get_connect_usage', description: 'Read trial quota, remaining queries/egress, and wallet balance' },
-  { name: 'get_wallet_status', description: 'Read wallet balance, auto-reload config, 30-day burn rate, and projected runway', inputSchema: { type: 'object', properties: {}, required: [] } },
-  { name: 'set_auto_reload', description: 'Enable or disable auto-reload and set the threshold ($1-$10,000) and reload amount ($5-$10,000). Defaults: $5 threshold / $20 reload. Call get_wallet_status first to see current state.', inputSchema: { type: 'object', properties: { auto_reload_enabled: { type: 'boolean', description: 'true = enable auto-reload' }, auto_reload_threshold_cents: { type: 'number', description: 'Trigger when balance drops below this (cents; min 100, max 1,000,000)' }, auto_reload_amount_cents: { type: 'number', description: 'Reload amount per trigger (cents; min 500, max 1,000,000)' } }, required: ['auto_reload_enabled'] } },
-  { name: 'create_topup', description: 'Create a Stripe Checkout session for a one-time credit purchase', inputSchema: { type: 'object', properties: { amount_cents: { type: 'number', description: 'Amount in cents (min 100 = $1, max 1,000,000 = $10,000)' } }, required: ['amount_cents'] } },
-  { name: 'get_usage_forecast', description: '30-day burn rate + projected days to empty (auto-reload on = no runway needed)', inputSchema: { type: 'object', properties: {}, required: [] } },
+  { name: 'get_data_source_audit', description: 'Read the hash-chained audit events for a connection', inputSchema: listToolInputSchema('get_data_source_audit') },
+  { name: 'get_connect_usage', description: 'Read trial quota, remaining queries/egress, and wallet balance', inputSchema: listToolInputSchema('get_connect_usage') },
+  { name: 'get_wallet_status', description: 'Read wallet balance, auto-reload config, 30-day burn rate, and projected runway', inputSchema: listToolInputSchema('get_wallet_status') },
+  {
+    name: 'set_auto_reload',
+    description: 'Enable or disable auto-reload and set the threshold ($1-$10,000) and reload amount ($5-$10,000). Defaults: $5 threshold / $20 reload. Call get_wallet_status first to see current state.',
+    inputSchema: listToolInputSchema('set_auto_reload')
+  },
+  {
+    name: 'create_topup',
+    description: 'Create a Stripe Checkout session for a one-time credit purchase',
+    inputSchema: listToolInputSchema('create_topup')
+  },
+  { name: 'get_usage_forecast', description: '30-day burn rate + projected days to empty (auto-reload on = no runway needed)', inputSchema: listToolInputSchema('get_usage_forecast') },
   {
     name: 'revoke_data_source_connection',
     description: 'Revoke a connection instantly — one call, audited; the audit trail stays verifiable',
@@ -333,239 +345,92 @@ export const agentToolDefinitions = [
   {
     name: 'env_list',
     description: 'List isolated health environments for this organization',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        include_destroyed: { type: 'boolean', description: 'Include destroyed environments (default: false)' }
-      }
-    }
+    inputSchema: listToolInputSchema('env_list')
   },
   {
     name: 'env_create',
     description: 'Provision a new isolated clinic health environment with synthetic EHR, diversified hospital departments/pathways, 6 base clinical capability packs, and attachable database modules',
-    inputSchema: {
-      type: 'object',
-      required: ['name'],
-      properties: {
-        name: { type: 'string', description: 'Environment name (e.g. Metro Hospital ICU & Oncology)' },
-        clinic_type: { type: 'string', enum: ['ambulatory', 'hospital', 'cardiology', 'ambulatory_clinic', 'hospital_system', 'cardiology_center'], description: 'Clinic template (default: ambulatory)' },
-        patient_cohort: { type: 'string', enum: ['general', 'geriatric', 'pediatric', 'cardiac', 'mixed'], description: 'Synthetic patient cohort (default: geriatric)' },
-        departments: { type: 'array', items: { type: 'string' }, description: 'Hospital departments to populate (emergency, icu, cardiology, oncology, obstetrics, pediatrics, behavioral, ambulatory)' },
-        diagnosis_pathways: { type: 'array', items: { type: 'string' }, description: 'Specific clinical archetype IDs (e.g. icu_septic_shock, onc_nsclc_immunotherapy, card_hfref)' },
-        treatment_modalities: { type: 'array', items: { type: 'string' }, description: 'Treatment modalities (pharmacotherapy, surgical_interventional, mechanical_ventilation_ecmo, immunotherapy_chemo, radiation_therapy, maternal_fetal_monitoring, behavioral_crisis,chronic_care_management)' },
-        acuity_levels: { type: 'array', items: { type: 'string' }, description: 'Acuity levels (routine, urgent, emergent, critical)' },
-        capability_packs: { type: 'array', items: { type: 'string' }, description: 'Base clinical capability packs (vocab_clinical, fhir_bulk_export, imaging_dicom, device_ieee11073, hie_ccda_xds, emerging_sdoh_genomics)' },
-        addons: { type: 'array', items: { type: 'string' }, description: 'Database pack modules to attach (postgres, sqlite, vectordb, neo4j)' },
-        patient_count: { type: 'number', description: 'Initial patient pool size (10-1000, default: 25)' },
-        bed_count: { type: 'number', description: 'Inpatient bed capacity (0-200, default: 40)' }
-      }
-    }
+    inputSchema: listToolInputSchema('env_create')
   },
   {
     name: 'env_consult_architect',
     description: 'Consult the per-organization isolated Conversational Environment Architect Agent to design a custom hospital simulation blueprint from natural language requirements, or auto-provision it in one call',
-    inputSchema: {
-      type: 'object',
-      required: ['message'],
-      properties: {
-        message: { type: 'string', description: 'Natural language description of your clinical integration or AI agent testing needs' },
-        session_id: { type: 'string', description: 'Optional architect session ID to continue a multi-turn blueprint refinement' },
-        auto_provision: { type: 'boolean', description: 'If true, automatically provisions the synthesized EnvironmentBlueprint when ready' }
-      }
-    }
+    inputSchema: listToolInputSchema('env_consult_architect')
   },
   {
     name: 'hebrah_consult_architect',
     description: 'Alias for env_consult_architect — consult the isolated Conversational Environment Architect Agent to map out synthetic hospital departments, clinical packs, and database add-ons',
-    inputSchema: {
-      type: 'object',
-      required: ['message'],
-      properties: {
-        message: { type: 'string', description: 'Natural language description of your clinical integration or AI agent testing needs' },
-        session_id: { type: 'string', description: 'Optional architect session ID to continue a multi-turn blueprint refinement' },
-        auto_provision: { type: 'boolean', description: 'If true, automatically provisions the synthesized EnvironmentBlueprint when ready' }
-      }
-    }
+    inputSchema: listToolInputSchema('hebrah_consult_architect')
   },
   {
     name: 'env_admit_patients',
     description: 'Dynamically admit and generate a new diversified synthetic patient cohort in an active environment by department, diagnosis pathway, treatment modality, or acuity',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        environment_id: { type: 'string', description: 'Environment ID (defaults to active session environment)' },
-        count: { type: 'number', description: 'Number of new synthetic patients to admit (1-100, default: 10)' },
-        departments: { type: 'array', items: { type: 'string' }, description: 'Hospital departments (emergency, icu, cardiology, oncology, obstetrics, pediatrics, behavioral, ambulatory)' },
-        diagnosis_pathways: { type: 'array', items: { type: 'string' }, description: 'Specific clinical archetype IDs' },
-        treatment_modalities: { type: 'array', items: { type: 'string' }, description: 'Treatment modalities' },
-        acuity_levels: { type: 'array', items: { type: 'string' }, description: 'Acuity levels (routine, urgent, emergent, critical)' }
-      }
-    }
+    inputSchema: listToolInputSchema('env_admit_patients')
   },
   {
     name: 'env_connect',
     description: 'Connect this AI agent session to an existing isolated health environment, register in Connected Agents, and set active session context',
-    inputSchema: {
-      type: 'object',
-      required: ['environment_id'],
-      properties: {
-        environment_id: { type: 'string', description: 'Environment ID to connect to (e.g. 4e39cc5c-...)' },
-        agent_name: { type: 'string', description: 'Optional display name for this agent in the Connected Agents table' }
-      }
-    }
+    inputSchema: listToolInputSchema('env_connect')
   },
   {
     name: 'env_get',
     description: 'Get details, connection endpoints, and database module status for an isolated environment',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        environment_id: { type: 'string', description: 'Environment ID (defaults to active session environment)' }
-      }
-    }
+    inputSchema: listToolInputSchema('env_get')
   },
   {
     name: 'env_list_tables',
     description: 'Inspect all database tables, live row counts, and column schemas in the environment isolated database',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        environment_id: { type: 'string', description: 'Environment ID (defaults to active session environment)' }
-      }
-    }
+    inputSchema: listToolInputSchema('env_list_tables')
   },
   {
     name: 'env_query_db',
     description: 'Execute a read-only SQL query against an environment database module via credential-blind proxy',
-    inputSchema: {
-      type: 'object',
-      required: ['sql'],
-      properties: {
-        environment_id: { type: 'string', description: 'Environment ID (defaults to active session environment)' },
-        sql: { type: 'string', description: 'Read-only SQL query to execute' },
-        addon: { type: 'string', enum: ['postgres', 'sqlite'], description: 'Target database addon (default: postgres)' }
-      }
-    }
+    inputSchema: listToolInputSchema('env_query_db')
   },
   {
     name: 'env_record_outcome',
     description: 'Persist a structured AI agent clinical finding or outcome into the environment app_outcomes table (protected by inbound DLP filter)',
-    inputSchema: {
-      type: 'object',
-      required: ['outcome_type', 'summary'],
-      properties: {
-        environment_id: { type: 'string', description: 'Environment ID (defaults to active session environment)' },
-        outcome_type: { type: 'string', description: 'Clinical outcome category (e.g. sepsis_risk_alert, care_gap_closed, triage_recommendation)' },
-        summary: { type: 'string', description: 'Human-readable summary of the clinical finding or outcome' },
-        patient_id: { type: 'string', description: 'Target synthetic patient ID (e.g. pat-4e39-001)' },
-        score: { type: 'number', description: 'Optional numeric risk or confidence score' },
-        source_agent: { type: 'string', description: 'Optional agent identifier attribution' },
-        payload: { type: 'object', description: 'Optional structured JSON metadata for the outcome' }
-      }
-    }
+    inputSchema: listToolInputSchema('env_record_outcome')
   },
   {
     name: 'env_trigger_scenario',
     description: 'Trigger a synthetic clinical workflow scenario (e.g. er_arrival, lab_critical, discharge, code_blue, icu_sepsis_deterioration, ventilator_desaturation_alarm) with live HL7 WebSocket alerts',
-    inputSchema: {
-      type: 'object',
-      required: ['scenario'],
-      properties: {
-        environment_id: { type: 'string', description: 'Environment ID (defaults to active session environment)' },
-        scenario: { type: 'string', enum: ['er_arrival', 'lab_critical', 'discharge', 'code_blue', 'vitals_spike', 'icu_sepsis_deterioration', 'ventilator_desaturation_alarm'], description: 'Clinical scenario name' },
-        patient_id: { type: 'string', description: 'Optional target patient ID' },
-        notes: { type: 'string', description: 'Optional clinical notes' }
-      }
-    }
+    inputSchema: listToolInputSchema('env_trigger_scenario')
   },
   {
     name: 'env_list_patients',
     description: 'List synthetic patients in the environment EHR with multi-facet filtering by department, diagnosis pathway, treatment modality, or acuity',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        environment_id: { type: 'string', description: 'Environment ID (defaults to active session environment)' },
-        department: { type: 'string', description: 'Filter by hospital department (emergency, icu, cardiology, oncology, obstetrics, pediatrics, behavioral, ambulatory)' },
-        diagnosis: { type: 'string', description: 'Filter by diagnosis pathway, ICD-10 code, or SNOMED CT code' },
-        treatment_modality: { type: 'string', description: 'Filter by treatment modality' },
-        acuity_level: { type: 'string', description: 'Filter by acuity level (routine, urgent, emergent, critical)' },
-        limit: { type: 'number', description: 'Maximum number of patients to return (1-200, default: 50)' }
-      }
-    }
+    inputSchema: listToolInputSchema('env_list_patients')
   },
   {
     name: 'env_get_patient_chart',
     description: 'Retrieve a complete synthetic patient chart (demographics, conditions, medications, vitals, lab results, encounters, imaging studies, genomics, SDOH, external C-CDA documents)',
-    inputSchema: {
-      type: 'object',
-      required: ['patient_id'],
-      properties: {
-        environment_id: { type: 'string', description: 'Environment ID (defaults to active session environment)' },
-        patient_id: { type: 'string', description: 'Patient ID (e.g. pat_001)' }
-      }
-    }
+    inputSchema: listToolInputSchema('env_get_patient_chart')
   },
   {
     name: 'env_get_logs',
     description: 'Retrieve tamper-evident activity and audit logs for the isolated health environment',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        environment_id: { type: 'string', description: 'Environment ID (defaults to active session environment)' },
-        limit: { type: 'number', description: 'Maximum number of log entries to return (1-200, default: 50)' },
-        event_type: { type: 'string', description: 'Optional filter by event_type (e.g. db_query, db_write, scenario_triggered, agent.connected)' }
-      }
-    }
+    inputSchema: listToolInputSchema('env_get_logs')
   },
   {
     name: 'env_pause',
     description: 'Pause an environment to suspend compute and reduce hourly rate to $0.00/hr (data preserved)',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        environment_id: { type: 'string', description: 'Environment ID (defaults to active session environment)' }
-      }
-    }
+    inputSchema: listToolInputSchema('env_pause')
   },
   {
     name: 'env_resume',
     description: 'Resume a paused environment and restore compute services',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        environment_id: { type: 'string', description: 'Environment ID (defaults to active session environment)' }
-      }
-    }
+    inputSchema: listToolInputSchema('env_resume')
   },
   {
     name: 'env_consult_studio',
     description: 'Consult the Per-Environment Isolated GCP AI Studio to explore synthetic cohorts, open-data clinical vignettes/guidelines/calculators/PrimeKG pathways, or execute read-only SQL/FHIR/DICOM/CDS checks (strictly locked to the environment; external skill/tool installation requests are blocked)',
-    inputSchema: {
-      type: 'object',
-      required: ['message'],
-      properties: {
-        environment_id: { type: 'string', description: 'Environment ID (defaults to active session environment)' },
-        message: { type: 'string', description: 'Natural language question or clinical data exploration prompt' },
-        session_id: { type: 'string', description: 'Optional Studio session ID to continue a multi-turn thread' }
-      }
-    }
+    inputSchema: listToolInputSchema('env_consult_studio')
   },
   {
     name: 'env_search_clinical_evidence',
     description: 'Search the Open-Data Clinical Knowledge & Evidence Enrichment Pack (clinical_knowledge_v1 + dicom_imaging_v1: vignettes, clinical guidelines, PrimeKG biomedical graph pathways, calculators, and de-identified DICOM exemplars)',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        environment_id: { type: 'string', description: 'Optional Environment ID (defaults to active session environment)' },
-        query: { type: 'string', description: 'Optional keyword search (e.g. sepsis, qSOFA, NSCLC, CHA2DS2-VASc)' },
-        subpack: {
-          type: 'string',
-          enum: ['all', 'open_clinical_vignettes', 'open_guidelines_vector', 'open_biomedical_kg', 'open_clinical_calculators', 'dicom_imaging_v1'],
-          description: 'Optional open-data sub-pack filter (default: all)'
-        },
-        specialty: { type: 'string', description: 'Optional specialty filter (e.g. icu_critical_care, cardiology_center, oncology_infusion)' }
-      }
-    }
+    inputSchema: listToolInputSchema('env_search_clinical_evidence')
   }
 ] as const
 
@@ -705,6 +570,318 @@ export const toolDefinitions = [
   { name: 'env_search_clinical_evidence', description: 'Search the Open-Data Clinical Knowledge & Evidence Enrichment Pack (clinical_knowledge_v1 + dicom_imaging_v1: vignettes, clinical guidelines, PrimeKG biomedical graph pathways, calculators, and de-identified DICOM exemplars)' }
 ]
 
+export function filterClinicalEvidenceCatalog(
+  catalog: Record<string, unknown>,
+  query: string,
+  subpack: string,
+  specialty: string
+): Record<string, unknown> {
+  const q = query.trim().toLowerCase()
+  const sp = specialty.trim().toLowerCase()
+  const sub = subpack.trim().toLowerCase() || 'all'
+  if (!q && !sp && sub === 'all') {
+    return {
+      ...catalog,
+      filter_applied: { query: null, subpack: sub, specialty: null }
+    }
+  }
+
+  const matchesItem = (item: unknown): boolean => {
+    if (!item || typeof item !== 'object') return true
+    const rec = item as Record<string, unknown>
+    if (sp) {
+      const itemSpec = String(rec.specialty ?? rec.archetype_id ?? rec.department ?? '').toLowerCase()
+      if (itemSpec && !itemSpec.includes(sp)) return false
+    }
+    if (q) {
+      const text = JSON.stringify(rec).toLowerCase()
+      if (!text.includes(q)) return false
+    }
+    return true
+  }
+
+  const out: Record<string, unknown> = { ...catalog }
+  const sectionKeys = ['vignettes', 'guidelines', 'primekg_pathways', 'calculators', 'imaging_exemplars']
+  for (const key of sectionKeys) {
+    if (sub !== 'all' && key !== sub) {
+      continue
+    }
+    if (Array.isArray(out[key])) {
+      out[key] = (out[key] as unknown[]).filter(matchesItem)
+    }
+  }
+
+  return {
+    ...out,
+    filter_applied: { query: q || null, subpack: sub, specialty: sp || null }
+  }
+}
+
+async function executeEnvironmentTool(
+  auth: McpAuth,
+  session: ReturnType<typeof getSession>,
+  name: string,
+  args: Record<string, unknown>
+): Promise<unknown> {
+  const isAgent = auth.mode === 'agent'
+  const envPrefix = isAgent ? '/v1/environments' : '/api/environments'
+
+  const envFetch = <T>(path: string, init?: RequestInit): Promise<T> => {
+    if (auth.mode === 'agent') {
+      return agentApiFetch<T>(auth, path, init)
+    }
+    return dashboardFetch<T>(auth.pat, path, init)
+  }
+
+  const resolveEnvId = (requireExplicit = false): { rawEnvId: string, encodedEnvId: string } => {
+    const rawEnvId = String(
+      args.environment_id ?? args.environmentId ?? (requireExplicit && isAgent ? '' : session.activeEnvironmentId) ?? ''
+    ).trim()
+    if (!rawEnvId) {
+      throw new Error(
+        requireExplicit
+          ? 'environment_id is required for env_connect'
+          : 'environment_id is required; call env_connect, env_create, or env_list first'
+      )
+    }
+    return { rawEnvId, encodedEnvId: safeId(rawEnvId, 'environment_id') }
+  }
+
+  switch (name) {
+    case 'env_list': {
+      const includeDestroyed = Boolean(args.include_destroyed ?? args.includeDestroyed)
+      return envFetch(`${envPrefix}?include_destroyed=${includeDestroyed}`)
+    }
+    case 'env_create': {
+      const envName = String(args.name ?? '').trim()
+      if (!envName) throw new Error('name is required for env_create')
+      const addons = (args.addons ?? args.database_packs ?? args.databasePacks ?? ['postgres']) as string[]
+      const body: Record<string, unknown> = {
+        name: envName,
+        clinic_type: args.clinic_type ?? args.clinicType ?? 'ambulatory',
+        patient_cohort: args.patient_cohort ?? args.patientCohort ?? 'geriatric',
+        addons
+      }
+      if (Array.isArray(args.departments)) body.departments = args.departments
+      if (Array.isArray(args.diagnosis_pathways ?? args.diagnosisPathways)) body.diagnosis_pathways = args.diagnosis_pathways ?? args.diagnosisPathways
+      if (Array.isArray(args.treatment_modalities ?? args.treatmentModalities)) body.treatment_modalities = args.treatment_modalities ?? args.treatmentModalities
+      if (Array.isArray(args.acuity_levels ?? args.acuityLevels)) body.acuity_levels = args.acuity_levels ?? args.acuityLevels
+      if (Array.isArray(args.capability_packs ?? args.capabilityPacks)) body.capability_packs = args.capability_packs ?? args.capabilityPacks
+      if (args.patient_count ?? args.patientCount) body.patient_count = Number(args.patient_count ?? args.patientCount)
+      if (args.bed_count ?? args.bedCount) body.bed_count = Number(args.bed_count ?? args.bedCount)
+      const result = await envFetch<{ id: string }>(envPrefix, {
+        method: 'POST',
+        body: JSON.stringify(body)
+      })
+      if (result?.id) {
+        session.activeEnvironmentId = result.id
+      }
+      return result
+    }
+    case 'env_consult_architect':
+    case 'hebrah_consult_architect': {
+      const message = String(args.message ?? '').trim()
+      if (!message) throw new Error('message is required for env_consult_architect')
+      const body: Record<string, unknown> = {
+        message,
+        channel: 'agent_mcp',
+        auto_provision: Boolean(args.auto_provision ?? args.autoProvision)
+      }
+      if (args.session_id ?? args.sessionId) {
+        body.session_id = safeId(String(args.session_id ?? args.sessionId).trim(), 'session_id')
+      }
+      const result = await envFetch<{ provisioned_environment?: { id?: string } }>(
+        `${envPrefix}/architect/chat`,
+        {
+          method: 'POST',
+          body: JSON.stringify(body)
+        }
+      )
+      if (result?.provisioned_environment?.id) {
+        session.activeEnvironmentId = result.provisioned_environment.id
+      }
+      return result
+    }
+    case 'env_admit_patients': {
+      const { encodedEnvId } = resolveEnvId()
+      const body: Record<string, unknown> = {
+        count: Number(args.count ?? 10)
+      }
+      if (Array.isArray(args.departments)) body.departments = args.departments
+      if (Array.isArray(args.diagnosis_pathways ?? args.diagnosisPathways)) body.diagnosis_pathways = args.diagnosis_pathways ?? args.diagnosisPathways
+      if (Array.isArray(args.treatment_modalities ?? args.treatmentModalities)) body.treatment_modalities = args.treatment_modalities ?? args.treatmentModalities
+      if (Array.isArray(args.acuity_levels ?? args.acuityLevels)) body.acuity_levels = args.acuity_levels ?? args.acuityLevels
+      return envFetch(`${envPrefix}/${encodedEnvId}/ehr/patients/generate`, {
+        method: 'POST',
+        body: JSON.stringify(body)
+      })
+    }
+    case 'env_connect': {
+      const { rawEnvId, encodedEnvId } = resolveEnvId(true)
+      if (isAgent) {
+        const body: Record<string, unknown> = {
+          client: String(args.client ?? 'hebrah-mcp-host').trim() || 'hebrah-mcp-host'
+        }
+        if (args.agent_name ?? args.agentName) {
+          body.agent_name = String(args.agent_name ?? args.agentName).trim()
+        }
+        const result = await envFetch<Record<string, unknown>>(
+          `${envPrefix}/${encodedEnvId}/agents/connect`,
+          {
+            method: 'POST',
+            body: JSON.stringify(body)
+          }
+        )
+        session.activeEnvironmentId = rawEnvId
+        return {
+          ...result,
+          activeEnvironmentId: rawEnvId,
+          note: 'Agent session connected and registered in Connected Agents. Subsequent env_* tools will default to this environment.'
+        }
+      }
+      const env = await envFetch<Record<string, unknown>>(`${envPrefix}/${encodedEnvId}`)
+      session.activeEnvironmentId = rawEnvId
+      return {
+        ...env,
+        activeEnvironmentId: rawEnvId,
+        note: 'Active environment set for this session. Subsequent env_* tools will default to this environment.'
+      }
+    }
+    case 'env_get': {
+      const { rawEnvId, encodedEnvId } = resolveEnvId()
+      if (!session.activeEnvironmentId) {
+        session.activeEnvironmentId = rawEnvId
+      }
+      return envFetch(`${envPrefix}/${encodedEnvId}`)
+    }
+    case 'env_list_tables': {
+      const { encodedEnvId } = resolveEnvId()
+      return envFetch(`${envPrefix}/${encodedEnvId}/db/tables`)
+    }
+    case 'env_query_db': {
+      const { encodedEnvId } = resolveEnvId()
+      const sql = String(args.sql ?? args.query ?? '').trim()
+      if (!sql) throw new Error('sql is required')
+      const addon = String(args.addon ?? args.pack ?? 'postgres').trim()
+      return envFetch(`${envPrefix}/${encodedEnvId}/db/query`, {
+        method: 'POST',
+        body: JSON.stringify({ sql, addon, actor_type: 'agent' })
+      })
+    }
+    case 'env_record_outcome': {
+      const { encodedEnvId } = resolveEnvId()
+      const outcomeType = String(args.outcome_type ?? args.outcomeType ?? '').trim()
+      if (!outcomeType) throw new Error('outcome_type is required')
+      const summary = String(args.summary ?? '').trim()
+      if (!summary) throw new Error('summary is required')
+      const body: Record<string, unknown> = {
+        outcome_type: outcomeType,
+        summary
+      }
+      if (args.patient_id ?? args.patientId) body.patient_id = safeId(String(args.patient_id ?? args.patientId).trim(), 'patient_id')
+      if (args.score !== undefined || args.risk_score !== undefined) {
+        body.score = Number(args.score ?? args.risk_score)
+      }
+      if (args.source_agent ?? args.sourceAgent) {
+        body.source_agent = String(args.source_agent ?? args.sourceAgent).trim()
+      }
+      if (args.payload && typeof args.payload === 'object') {
+        body.payload = args.payload
+      }
+      return envFetch(`${envPrefix}/${encodedEnvId}/db/outcomes`, {
+        method: 'POST',
+        body: JSON.stringify(body)
+      })
+    }
+    case 'env_trigger_scenario': {
+      const { encodedEnvId } = resolveEnvId()
+      const scenario = String(args.scenario ?? args.scenario_id ?? args.scenarioId ?? '').trim()
+      if (!scenario) throw new Error('scenario is required (e.g. er_arrival, lab_critical, discharge, code_blue)')
+      const body: Record<string, unknown> = { scenario }
+      if (args.patient_id ?? args.patientId) body.patient_id = safeId(String(args.patient_id ?? args.patientId).trim(), 'patient_id')
+      if (args.notes) body.notes = String(args.notes)
+      return envFetch(`${envPrefix}/${encodedEnvId}/ehr/scenarios/trigger`, {
+        method: 'POST',
+        body: JSON.stringify(body)
+      })
+    }
+    case 'env_list_patients': {
+      const { encodedEnvId } = resolveEnvId()
+      const params = new URLSearchParams()
+      if (args.department) params.set('department', String(args.department).trim())
+      if (args.diagnosis) params.set('diagnosis', String(args.diagnosis).trim())
+      if (args.treatment_modality ?? args.treatmentModality) params.set('treatment_modality', String(args.treatment_modality ?? args.treatmentModality).trim())
+      if (args.acuity_level ?? args.acuityLevel) params.set('acuity_level', String(args.acuity_level ?? args.acuityLevel).trim())
+      if (args.limit != null) params.set('limit', String(Number(args.limit)))
+      const qs = params.toString() ? `?${params.toString()}` : ''
+      return envFetch(`${envPrefix}/${encodedEnvId}/ehr/patients${qs}`)
+    }
+    case 'env_get_patient_chart': {
+      const { encodedEnvId } = resolveEnvId()
+      const rawPatientId = String(args.patient_id ?? args.patientId ?? '').trim()
+      if (!rawPatientId) throw new Error('patient_id is required (e.g. pat_001)')
+      const encodedPatientId = safeId(rawPatientId, 'patient_id')
+      return envFetch(`${envPrefix}/${encodedEnvId}/ehr/patients/${encodedPatientId}`)
+    }
+    case 'env_get_logs': {
+      const { encodedEnvId } = resolveEnvId()
+      const params = new URLSearchParams()
+      if (args.limit != null) params.set('limit', String(Number(args.limit)))
+      if (args.event_type ?? args.eventType) params.set('event_type', String(args.event_type ?? args.eventType).trim())
+      const qs = params.toString() ? `?${params.toString()}` : ''
+      return envFetch(`${envPrefix}/${encodedEnvId}/logs${qs}`)
+    }
+    case 'env_pause': {
+      const { encodedEnvId } = resolveEnvId()
+      return envFetch(`${envPrefix}/${encodedEnvId}/pause`, {
+        method: 'POST'
+      })
+    }
+    case 'env_resume': {
+      const { encodedEnvId } = resolveEnvId()
+      return envFetch(`${envPrefix}/${encodedEnvId}/resume`, {
+        method: 'POST'
+      })
+    }
+    case 'env_consult_studio': {
+      const { encodedEnvId } = resolveEnvId()
+      const message = String(args.message ?? '').trim()
+      if (!message) throw new Error('message is required for env_consult_studio')
+      const body: Record<string, unknown> = {
+        message,
+        channel: 'agent_mcp'
+      }
+      if (args.session_id ?? args.sessionId) {
+        body.session_id = safeId(String(args.session_id ?? args.sessionId).trim(), 'session_id')
+      }
+      return envFetch(`${envPrefix}/${encodedEnvId}/studio/chat`, {
+        method: 'POST',
+        body: JSON.stringify(body)
+      })
+    }
+    case 'env_search_clinical_evidence': {
+      const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
+      const query = String(args.query ?? '')
+      const subpack = String(args.subpack ?? 'all')
+      const specialty = String(args.specialty ?? '')
+      let catalog: Record<string, unknown>
+      if (rawEnvId) {
+        const encodedEnvId = safeId(rawEnvId, 'environment_id')
+        catalog = auth.mode === 'agent'
+          ? await agentApiFetch<Record<string, unknown>>(auth, `/v1/environments/${encodedEnvId}/open-data/catalog`)
+          : await dashboardFetch<Record<string, unknown>>(auth.pat, `/api/environments/${encodedEnvId}/open-data`)
+      } else {
+        catalog = auth.mode === 'agent'
+          ? await agentApiFetch<Record<string, unknown>>(auth, '/v1/sandbox/research-packs/clinical_knowledge_v1')
+          : await ultraFetch<Record<string, unknown>>(auth.orgId, '/v1/sandbox/research-packs/clinical_knowledge_v1')
+      }
+      return filterClinicalEvidenceCatalog(catalog, query, subpack, specialty)
+    }
+    default:
+      throw new Error(`Unknown environment tool: ${name}`)
+  }
+}
+
 export async function callTool(
   auth: McpAuth,
   sessionId: string,
@@ -714,14 +891,17 @@ export async function callTool(
   if (!auth.bootstrap) await checkRateLimit(auth.orgId, name)
   const session = getSession(sessionId)
 
-  // Agent-key (hb_conn_*) sessions: the connection surface only. These
-  // forward the agent key to the merged hebrah-api — scopes, metering, and
-  // audit attribute to the agent's org.
+  // Agent-key (hb_conn_* / hb_live_* / hb_test_*) sessions: the connection and
+  // isolated environment surfaces. Forward the agent key to hebrah-api — scopes,
+  // metering, and audit attribute to the agent's org.
   if (auth.mode === 'agent') {
     if (!(AGENT_TOOL_NAMES as readonly string[]).includes(name)) {
       throw new Error(
         `${name} requires a dashboard PAT session (hb_pat_*). Agent-key sessions expose the connection tools only: ${AGENT_TOOL_NAMES.join(', ')}`
       )
+    }
+    if (name.startsWith('env_') || name === 'hebrah_consult_architect') {
+      return executeEnvironmentTool(auth, session, name, args)
     }
     switch (name) {
       case 'discover_data_sources':
@@ -729,6 +909,7 @@ export async function callTool(
       case 'connect_to_data_source': {
         const target = String(args.target_id ?? args.target ?? '').trim()
         if (!target) throw new Error('target_id is required; call discover_data_sources first')
+        safeId(target, 'target_id')
         const rawScopes = args.scopes
         if (!Array.isArray(rawScopes) || rawScopes.length === 0 || rawScopes.some(scope => typeof scope !== 'string')) {
           throw new Error('scopes must be a non-empty string array from the target discovery metadata')
@@ -808,252 +989,13 @@ export async function callTool(
           note: 'Connection revoked instantly. Its audit trail remains verifiable.'
         }
       }
-      case 'env_list': {
-        const includeDestroyed = Boolean(args.include_destroyed ?? args.includeDestroyed)
-        return agentApiFetch(auth, `/v1/environments?include_destroyed=${includeDestroyed}`)
-      }
-      case 'env_create': {
-        const name = String(args.name ?? '').trim()
-        if (!name) throw new Error('name is required for env_create')
-        const addons = (args.addons ?? args.database_packs ?? args.databasePacks ?? ['postgres']) as string[]
-        const body: Record<string, unknown> = {
-          name,
-          clinic_type: args.clinic_type ?? args.clinicType ?? 'ambulatory',
-          patient_cohort: args.patient_cohort ?? args.patientCohort ?? 'geriatric',
-          addons
-        }
-        if (Array.isArray(args.departments)) body.departments = args.departments
-        if (Array.isArray(args.diagnosis_pathways ?? args.diagnosisPathways)) body.diagnosis_pathways = args.diagnosis_pathways ?? args.diagnosisPathways
-        if (Array.isArray(args.treatment_modalities ?? args.treatmentModalities)) body.treatment_modalities = args.treatment_modalities ?? args.treatmentModalities
-        if (Array.isArray(args.acuity_levels ?? args.acuityLevels)) body.acuity_levels = args.acuity_levels ?? args.acuityLevels
-        if (Array.isArray(args.capability_packs ?? args.capabilityPacks)) body.capability_packs = args.capability_packs ?? args.capabilityPacks
-        if (args.patient_count ?? args.patientCount) body.patient_count = Number(args.patient_count ?? args.patientCount)
-        if (args.bed_count ?? args.bedCount) body.bed_count = Number(args.bed_count ?? args.bedCount)
-        const result = await agentApiFetch<{ id: string }>(auth, '/v1/environments', {
-          method: 'POST',
-          body: JSON.stringify(body)
-        })
-        if (result?.id) {
-          session.activeEnvironmentId = result.id
-        }
-        return result
-      }
-      case 'env_consult_architect':
-      case 'hebrah_consult_architect': {
-        const message = String(args.message ?? '').trim()
-        if (!message) throw new Error('message is required for env_consult_architect')
-        const body: Record<string, unknown> = {
-          message,
-          channel: 'agent_mcp',
-          auto_provision: Boolean(args.auto_provision ?? args.autoProvision)
-        }
-        if (args.session_id ?? args.sessionId) {
-          body.session_id = String(args.session_id ?? args.sessionId).trim()
-        }
-        const result = await agentApiFetch<{ provisioned_environment?: { id?: string } }>(
-          auth,
-          '/v1/environments/architect/chat',
-          {
-            method: 'POST',
-            body: JSON.stringify(body)
-          }
-        )
-        if (result?.provisioned_environment?.id) {
-          session.activeEnvironmentId = result.provisioned_environment.id
-        }
-        return result
-      }
-      case 'env_admit_patients': {
-        const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
-        if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
-        const encodedEnvId = safeId(rawEnvId, 'environment_id')
-        const body: Record<string, unknown> = {
-          count: Number(args.count ?? 10)
-        }
-        if (Array.isArray(args.departments)) body.departments = args.departments
-        if (Array.isArray(args.diagnosis_pathways ?? args.diagnosisPathways)) body.diagnosis_pathways = args.diagnosis_pathways ?? args.diagnosisPathways
-        if (Array.isArray(args.treatment_modalities ?? args.treatmentModalities)) body.treatment_modalities = args.treatment_modalities ?? args.treatmentModalities
-        if (Array.isArray(args.acuity_levels ?? args.acuityLevels)) body.acuity_levels = args.acuity_levels ?? args.acuityLevels
-        return agentApiFetch(auth, `/v1/environments/${encodedEnvId}/ehr/patients/generate`, {
-          method: 'POST',
-          body: JSON.stringify(body)
-        })
-      }
-      case 'env_connect': {
-        const rawEnvId = String(args.environment_id ?? args.environmentId ?? '').trim()
-        if (!rawEnvId) throw new Error('environment_id is required for env_connect')
-        const encodedEnvId = safeId(rawEnvId, 'environment_id')
-        const body: Record<string, unknown> = {
-          client: String(args.client ?? 'hebrah-mcp-host').trim() || 'hebrah-mcp-host'
-        }
-        if (args.agent_name ?? args.agentName) {
-          body.agent_name = String(args.agent_name ?? args.agentName).trim()
-        }
-        const result = await agentApiFetch<Record<string, unknown>>(
-          auth,
-          `/v1/environments/${encodedEnvId}/agents/connect`,
-          {
-            method: 'POST',
-            body: JSON.stringify(body)
-          }
-        )
-        session.activeEnvironmentId = rawEnvId
-        return {
-          ...result,
-          activeEnvironmentId: rawEnvId,
-          note: 'Agent session connected and registered in Connected Agents. Subsequent env_* tools will default to this environment.'
-        }
-      }
-      case 'env_get': {
-        const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
-        if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
-        const encodedEnvId = safeId(rawEnvId, 'environment_id')
-        if (!session.activeEnvironmentId) {
-          session.activeEnvironmentId = rawEnvId
-        }
-        return agentApiFetch(auth, `/v1/environments/${encodedEnvId}`)
-      }
-      case 'env_list_tables': {
-        const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
-        if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
-        const encodedEnvId = safeId(rawEnvId, 'environment_id')
-        return agentApiFetch(auth, `/v1/environments/${encodedEnvId}/db/tables`)
-      }
-      case 'env_query_db': {
-        const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
-        if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
-        const encodedEnvId = safeId(rawEnvId, 'environment_id')
-        const sql = String(args.sql ?? args.query ?? '').trim()
-        if (!sql) throw new Error('sql is required')
-        const addon = String(args.addon ?? args.pack ?? 'postgres').trim()
-        return agentApiFetch(auth, `/v1/environments/${encodedEnvId}/db/query`, {
-          method: 'POST',
-          body: JSON.stringify({ sql, addon, actor_type: 'agent' })
-        })
-      }
-      case 'env_record_outcome': {
-        const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
-        if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
-        const encodedEnvId = safeId(rawEnvId, 'environment_id')
-        const outcomeType = String(args.outcome_type ?? args.outcomeType ?? '').trim()
-        if (!outcomeType) throw new Error('outcome_type is required')
-        const summary = String(args.summary ?? '').trim()
-        if (!summary) throw new Error('summary is required')
-        const body: Record<string, unknown> = {
-          outcome_type: outcomeType,
-          summary
-        }
-        if (args.patient_id ?? args.patientId) body.patient_id = String(args.patient_id ?? args.patientId).trim()
-        if (args.score !== undefined || args.risk_score !== undefined) {
-          body.score = Number(args.score ?? args.risk_score)
-        }
-        if (args.source_agent ?? args.sourceAgent) {
-          body.source_agent = String(args.source_agent ?? args.sourceAgent).trim()
-        }
-        if (args.payload && typeof args.payload === 'object') {
-          body.payload = args.payload
-        }
-        return agentApiFetch(auth, `/v1/environments/${encodedEnvId}/db/outcomes`, {
-          method: 'POST',
-          body: JSON.stringify(body)
-        })
-      }
-      case 'env_trigger_scenario': {
-        const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
-        if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
-        const encodedEnvId = safeId(rawEnvId, 'environment_id')
-        const scenario = String(args.scenario ?? args.scenario_id ?? args.scenarioId ?? '').trim()
-        if (!scenario) throw new Error('scenario is required (e.g. er_arrival, lab_critical, discharge, code_blue)')
-        const body: Record<string, unknown> = { scenario }
-        if (args.patient_id ?? args.patientId) body.patient_id = String(args.patient_id ?? args.patientId)
-        if (args.notes) body.notes = String(args.notes)
-        return agentApiFetch(auth, `/v1/environments/${encodedEnvId}/ehr/scenarios/trigger`, {
-          method: 'POST',
-          body: JSON.stringify(body)
-        })
-      }
-      case 'env_list_patients': {
-        const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
-        if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
-        const encodedEnvId = safeId(rawEnvId, 'environment_id')
-        const params = new URLSearchParams()
-        if (args.department) params.set('department', String(args.department).trim())
-        if (args.diagnosis) params.set('diagnosis', String(args.diagnosis).trim())
-        if (args.treatment_modality ?? args.treatmentModality) params.set('treatment_modality', String(args.treatment_modality ?? args.treatmentModality).trim())
-        if (args.acuity_level ?? args.acuityLevel) params.set('acuity_level', String(args.acuity_level ?? args.acuityLevel).trim())
-        if (args.limit != null) params.set('limit', String(Number(args.limit)))
-        const qs = params.toString() ? `?${params.toString()}` : ''
-        return agentApiFetch(auth, `/v1/environments/${encodedEnvId}/ehr/patients${qs}`)
-      }
-      case 'env_get_patient_chart': {
-        const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
-        if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
-        const encodedEnvId = safeId(rawEnvId, 'environment_id')
-        const rawPatientId = String(args.patient_id ?? args.patientId ?? '').trim()
-        if (!rawPatientId) throw new Error('patient_id is required (e.g. pat_001)')
-        const encodedPatientId = safeId(rawPatientId, 'patient_id')
-        return agentApiFetch(auth, `/v1/environments/${encodedEnvId}/ehr/patients/${encodedPatientId}`)
-      }
-      case 'env_get_logs': {
-        const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
-        if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
-        const encodedEnvId = safeId(rawEnvId, 'environment_id')
-        const params = new URLSearchParams()
-        if (args.limit != null) params.set('limit', String(Number(args.limit)))
-        if (args.event_type ?? args.eventType) params.set('event_type', String(args.event_type ?? args.eventType).trim())
-        const qs = params.toString() ? `?${params.toString()}` : ''
-        return agentApiFetch(auth, `/v1/environments/${encodedEnvId}/logs${qs}`)
-      }
-      case 'env_pause': {
-        const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
-        if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
-        const encodedEnvId = safeId(rawEnvId, 'environment_id')
-        return agentApiFetch(auth, `/v1/environments/${encodedEnvId}/pause`, {
-          method: 'POST'
-        })
-      }
-      case 'env_resume': {
-        const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
-        if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
-        const encodedEnvId = safeId(rawEnvId, 'environment_id')
-        return agentApiFetch(auth, `/v1/environments/${encodedEnvId}/resume`, {
-          method: 'POST'
-        })
-      }
-      case 'env_consult_studio': {
-        const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
-        if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
-        const encodedEnvId = safeId(rawEnvId, 'environment_id')
-        const message = String(args.message ?? '').trim()
-        if (!message) throw new Error('message is required for env_consult_studio')
-        const body: Record<string, unknown> = {
-          message,
-          channel: 'agent_mcp'
-        }
-        if (args.session_id ?? args.sessionId) {
-          body.session_id = String(args.session_id ?? args.sessionId).trim()
-        }
-        return agentApiFetch(auth, `/v1/environments/${encodedEnvId}/studio/chat`, {
-          method: 'POST',
-          body: JSON.stringify(body)
-        })
-      }
-      case 'env_search_clinical_evidence': {
-        const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
-        const query = String(args.query ?? '').trim().toLowerCase()
-        const subpack = String(args.subpack ?? 'all').trim()
-        const specialty = String(args.specialty ?? '').trim().toLowerCase()
-        const catalog = rawEnvId
-          ? await agentApiFetch<Record<string, unknown>>(auth, `/v1/environments/${safeId(rawEnvId, 'environment_id')}/open-data/catalog`)
-          : await agentApiFetch<Record<string, unknown>>(auth, '/v1/sandbox/research-packs/clinical_knowledge_v1')
-        return {
-          ...catalog,
-          filter_applied: { query: query || null, subpack, specialty: specialty || null }
-        }
-      }
       default:
         throw new Error(`Unknown agent tool: ${name}`)
     }
+  }
+
+  if (!auth.bootstrap && (name.startsWith('env_') || name === 'hebrah_consult_architect')) {
+    return executeEnvironmentTool(auth, session, name, args)
   }
 
   switch (name) {
@@ -1078,7 +1020,7 @@ export async function callTool(
         signal: AbortSignal.timeout(30_000)
       })
       if (!result.ok) {
-        throw new Error(`Agent signup failed (${result.status}): ${await result.text()}`)
+        throw new Error(redactSecrets(`Agent signup failed (${result.status}): ${await result.text()}`))
       }
       const data = await result.json() as {
         orgId: string
@@ -1128,6 +1070,9 @@ export async function callTool(
     case 'connect_to_data_source': {
       const target = String(args.target ?? '').trim()
       if (!target) throw new Error('target is required; call discover_data_sources first')
+      if (target.length > 256 || /[\r\n\0]/.test(target) || target.includes('..')) {
+        throw new Error('Invalid target')
+      }
       const rawScopes = args.scopes
       if (!Array.isArray(rawScopes) || rawScopes.length === 0 || rawScopes.some(scope => typeof scope !== 'string')) {
         throw new Error('scopes must be a non-empty string array from the target discovery metadata')
@@ -1185,7 +1130,10 @@ export async function callTool(
       return result
     }
     case 'set_active_connection': {
-      session.activeConnectionId = String(args.connectionId)
+      const rawConnId = String(args.connectionId ?? '').trim()
+      if (!rawConnId) throw new Error('connectionId is required for set_active_connection')
+      safeId(rawConnId, 'connectionId')
+      session.activeConnectionId = rawConnId
       const list = await dashboardFetch<{ connections: Array<{ id: string, environment: string, name: string }> }>(
         auth.pat,
         '/api/connections?includeHidden=true'
@@ -1534,7 +1482,6 @@ export async function callTool(
       if (!vmId) {
         throw new Error('vmId required for run_hl7_flight_check')
       }
-      const config = await import('./config.js').then(m => m.config)
       const secret = config.orchestratorSecret || process.env.ORCHESTRATOR_SECRET
       if (!secret) {
         throw new Error('ORCHESTRATOR_SECRET required on hebrah-mcp-host for run_hl7_flight_check')
@@ -1594,24 +1541,37 @@ export async function callTool(
         body: JSON.stringify(body)
       })
     }
-    case 'register_smart_client':
+    case 'register_smart_client': {
+      const rawRedirectUris = args.redirect_uris ?? args.redirectUris ?? []
+      if (!Array.isArray(rawRedirectUris)) {
+        throw new Error('redirect_uris must be an array of URLs')
+      }
+      const validatedRedirectUris = rawRedirectUris.map(u =>
+        assertSafeWebhookOrCallbackUrl(String(u), 'redirect_uris')
+      )
       return dashboardFetch(auth.pat, '/api/smart/clients', {
         method: 'POST',
         body: JSON.stringify({
           client_id: args.client_id ?? args.clientId,
           name: args.name ?? 'MCP SMART client',
-          redirect_uris: args.redirect_uris ?? args.redirectUris ?? []
+          redirect_uris: validatedRedirectUris
         })
       })
-    case 'start_smart_launch':
+    }
+    case 'start_smart_launch': {
+      const rawSmartUrl = args.smart_app_url ?? args.smartAppUrl ?? null
+      const validatedSmartUrl = rawSmartUrl
+        ? assertSafeWebhookOrCallbackUrl(String(rawSmartUrl), 'smart_app_url')
+        : null
       return dashboardFetch(auth.pat, '/api/smart/launch', {
         method: 'POST',
         body: JSON.stringify({
           patient_id: args.patient_id ?? args.patientId,
           encounter_id: args.encounter_id ?? args.encounterId ?? null,
-          smart_app_url: args.smart_app_url ?? args.smartAppUrl ?? null
+          smart_app_url: validatedSmartUrl
         })
       })
+    }
     case 'run_mpi_match':
       return ultraFetch(auth.orgId, '/v1/sandbox/mpi/match', {
         method: 'POST',
@@ -1804,8 +1764,8 @@ export async function callTool(
       return ultraFetch(auth.orgId, `/v1/environments/${safeId(String(envId), 'environment_id')}/dicomweb/studies`, {
         method: 'POST',
         body: JSON.stringify({
-          patient_id: String(patientId),
-          exemplar_id: exemplarId ? String(exemplarId) : undefined,
+          patient_id: safeId(String(patientId), 'patient_id'),
+          exemplar_id: exemplarId ? safeId(String(exemplarId), 'exemplar_id') : undefined,
           modality: modality ? String(modality) : 'CT'
         })
       })
@@ -1821,7 +1781,8 @@ export async function callTool(
         throw new Error('connectionId required for get_connection_credentials')
       }
 
-      const localAppUrl = String(args.localAppUrl ?? args.local_app_url ?? '').trim()
+      const urlInput = parseLocalAppUrlFromArgs(args)
+      const localAppUrl = urlInput.localAppUrl ?? ''
       const query = localAppUrl
         ? `?localAppUrl=${encodeURIComponent(localAppUrl)}`
         : ''
@@ -1831,7 +1792,6 @@ export async function callTool(
         `/api/connections/${safeId(connectionId, 'connectionId')}/credentials${query}`
       )
 
-      const urlInput = parseLocalAppUrlFromArgs(args)
       const suggestions = Object.keys(urlInput).length > 0
         ? suggestedWebhookUrls(urlInput)
         : undefined
@@ -1885,7 +1845,9 @@ export async function callTool(
       if (!connectionId) throw new Error('connectionId required for propose_custom_ehr_model')
       const encodedConnId = safeId(connectionId, 'connectionId')
       const ingestBody: Record<string, unknown> = {}
-      if (args.url) ingestBody.url = String(args.url)
+      if (args.url) {
+        ingestBody.url = assertSafeWebhookOrCallbackUrl(String(args.url), 'url', { disallowLoopback: true })
+      }
       if (args.text) ingestBody.text = String(args.text)
       if (!ingestBody.url && !ingestBody.text) {
         throw new Error('text or url required for propose_custom_ehr_model')
@@ -1981,236 +1943,6 @@ export async function callTool(
           ?? 'Plaintext is shown once — write HEBRAH_WEBHOOK_SECRET to your local demo .env immediately.'
       }
     }
-    case 'env_list': {
-      const includeDestroyed = Boolean(args.include_destroyed ?? args.includeDestroyed)
-      return dashboardFetch(auth.pat, `/api/environments?include_destroyed=${includeDestroyed}`)
-    }
-    case 'env_create': {
-      const name = String(args.name ?? '').trim()
-      if (!name) throw new Error('name is required for env_create')
-      const addons = (args.addons ?? args.database_packs ?? args.databasePacks ?? ['postgres']) as string[]
-      const body: Record<string, unknown> = {
-        name,
-        clinic_type: args.clinic_type ?? args.clinicType ?? 'ambulatory',
-        patient_cohort: args.patient_cohort ?? args.patientCohort ?? 'geriatric',
-        addons
-      }
-      if (Array.isArray(args.departments)) body.departments = args.departments
-      if (Array.isArray(args.diagnosis_pathways ?? args.diagnosisPathways)) body.diagnosis_pathways = args.diagnosis_pathways ?? args.diagnosisPathways
-      if (Array.isArray(args.treatment_modalities ?? args.treatmentModalities)) body.treatment_modalities = args.treatment_modalities ?? args.treatmentModalities
-      if (Array.isArray(args.acuity_levels ?? args.acuityLevels)) body.acuity_levels = args.acuity_levels ?? args.acuityLevels
-      if (Array.isArray(args.capability_packs ?? args.capabilityPacks)) body.capability_packs = args.capability_packs ?? args.capabilityPacks
-      if (args.patient_count ?? args.patientCount) body.patient_count = Number(args.patient_count ?? args.patientCount)
-      if (args.bed_count ?? args.bedCount) body.bed_count = Number(args.bed_count ?? args.bedCount)
-      const result = await dashboardFetch<{ id: string }>(auth.pat, '/api/environments', {
-        method: 'POST',
-        body: JSON.stringify(body)
-      })
-      if (result?.id) {
-        session.activeEnvironmentId = result.id
-      }
-      return result
-    }
-    case 'env_consult_architect':
-    case 'hebrah_consult_architect': {
-      const message = String(args.message ?? '').trim()
-      if (!message) throw new Error('message is required for env_consult_architect')
-      const body: Record<string, unknown> = {
-        message,
-        channel: 'agent_mcp',
-        auto_provision: Boolean(args.auto_provision ?? args.autoProvision)
-      }
-      if (args.session_id ?? args.sessionId) {
-        body.session_id = String(args.session_id ?? args.sessionId).trim()
-      }
-      const result = await dashboardFetch<{ provisioned_environment?: { id?: string } }>(
-        auth.pat,
-        '/api/environments/architect/chat',
-        {
-          method: 'POST',
-          body: JSON.stringify(body)
-        }
-      )
-      if (result?.provisioned_environment?.id) {
-        session.activeEnvironmentId = result.provisioned_environment.id
-      }
-      return result
-    }
-    case 'env_admit_patients': {
-      const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
-      if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
-      const encodedEnvId = safeId(rawEnvId, 'environment_id')
-      const body: Record<string, unknown> = {
-        count: Number(args.count ?? 10)
-      }
-      if (Array.isArray(args.departments)) body.departments = args.departments
-      if (Array.isArray(args.diagnosis_pathways ?? args.diagnosisPathways)) body.diagnosis_pathways = args.diagnosis_pathways ?? args.diagnosisPathways
-      if (Array.isArray(args.treatment_modalities ?? args.treatmentModalities)) body.treatment_modalities = args.treatment_modalities ?? args.treatmentModalities
-      if (Array.isArray(args.acuity_levels ?? args.acuityLevels)) body.acuity_levels = args.acuity_levels ?? args.acuityLevels
-      return dashboardFetch(auth.pat, `/api/environments/${encodedEnvId}/ehr/patients/generate`, {
-        method: 'POST',
-        body: JSON.stringify(body)
-      })
-    }
-    case 'env_connect': {
-      const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
-      if (!rawEnvId) throw new Error('environment_id is required for env_connect')
-      const encodedEnvId = safeId(rawEnvId, 'environment_id')
-      const env = await dashboardFetch<Record<string, unknown>>(auth.pat, `/api/environments/${encodedEnvId}`)
-      session.activeEnvironmentId = rawEnvId
-      return {
-        ...env,
-        activeEnvironmentId: rawEnvId,
-        note: 'Active environment set for this session. Subsequent env_* tools will default to this environment.'
-      }
-    }
-    case 'env_get': {
-      const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
-      if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
-      const encodedEnvId = safeId(rawEnvId, 'environment_id')
-      if (!session.activeEnvironmentId) {
-        session.activeEnvironmentId = rawEnvId
-      }
-      return dashboardFetch(auth.pat, `/api/environments/${encodedEnvId}`)
-    }
-    case 'env_list_tables': {
-      const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
-      if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
-      const encodedEnvId = safeId(rawEnvId, 'environment_id')
-      return dashboardFetch(auth.pat, `/api/environments/${encodedEnvId}/db/tables`)
-    }
-    case 'env_query_db': {
-      const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
-      if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
-      const encodedEnvId = safeId(rawEnvId, 'environment_id')
-      const sql = String(args.sql ?? args.query ?? '').trim()
-      if (!sql) throw new Error('sql is required')
-      const addon = String(args.addon ?? args.pack ?? 'postgres').trim()
-      return dashboardFetch(auth.pat, `/api/environments/${encodedEnvId}/db/query`, {
-        method: 'POST',
-        body: JSON.stringify({ sql, addon, actor_type: 'agent' })
-      })
-    }
-    case 'env_record_outcome': {
-      const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
-      if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
-      const encodedEnvId = safeId(rawEnvId, 'environment_id')
-      const outcomeType = String(args.outcome_type ?? args.outcomeType ?? '').trim()
-      if (!outcomeType) throw new Error('outcome_type is required')
-      const summary = String(args.summary ?? '').trim()
-      if (!summary) throw new Error('summary is required')
-      const body: Record<string, unknown> = {
-        outcome_type: outcomeType,
-        summary
-      }
-      if (args.patient_id ?? args.patientId) body.patient_id = String(args.patient_id ?? args.patientId).trim()
-      if (args.score !== undefined || args.risk_score !== undefined) {
-        body.score = Number(args.score ?? args.risk_score)
-      }
-      if (args.source_agent ?? args.sourceAgent) {
-        body.source_agent = String(args.source_agent ?? args.sourceAgent).trim()
-      }
-      if (args.payload && typeof args.payload === 'object') {
-        body.payload = args.payload
-      }
-      return dashboardFetch(auth.pat, `/api/environments/${encodedEnvId}/db/outcomes`, {
-        method: 'POST',
-        body: JSON.stringify(body)
-      })
-    }
-    case 'env_trigger_scenario': {
-      const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
-      if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
-      const encodedEnvId = safeId(rawEnvId, 'environment_id')
-      const scenario = String(args.scenario ?? args.scenario_id ?? args.scenarioId ?? '').trim()
-      if (!scenario) throw new Error('scenario is required (e.g. er_arrival, lab_critical, discharge, code_blue)')
-      const body: Record<string, unknown> = { scenario }
-      if (args.patient_id ?? args.patientId) body.patient_id = String(args.patient_id ?? args.patientId)
-      if (args.notes) body.notes = String(args.notes)
-      return dashboardFetch(auth.pat, `/api/environments/${encodedEnvId}/ehr/scenarios/trigger`, {
-        method: 'POST',
-        body: JSON.stringify(body)
-      })
-    }
-    case 'env_list_patients': {
-      const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
-      if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
-      const encodedEnvId = safeId(rawEnvId, 'environment_id')
-      const params = new URLSearchParams()
-      if (args.department) params.set('department', String(args.department).trim())
-      if (args.diagnosis) params.set('diagnosis', String(args.diagnosis).trim())
-      if (args.treatment_modality ?? args.treatmentModality) params.set('treatment_modality', String(args.treatment_modality ?? args.treatmentModality).trim())
-      if (args.acuity_level ?? args.acuityLevel) params.set('acuity_level', String(args.acuity_level ?? args.acuityLevel).trim())
-      if (args.limit != null) params.set('limit', String(Number(args.limit)))
-      const qs = params.toString() ? `?${params.toString()}` : ''
-      return dashboardFetch(auth.pat, `/api/environments/${encodedEnvId}/ehr/patients${qs}`)
-    }
-    case 'env_get_patient_chart': {
-      const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
-      if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
-      const encodedEnvId = safeId(rawEnvId, 'environment_id')
-      const rawPatientId = String(args.patient_id ?? args.patientId ?? '').trim()
-      if (!rawPatientId) throw new Error('patient_id is required (e.g. pat_001)')
-      const encodedPatientId = safeId(rawPatientId, 'patient_id')
-      return dashboardFetch(auth.pat, `/api/environments/${encodedEnvId}/ehr/patients/${encodedPatientId}`)
-    }
-    case 'env_get_logs': {
-      const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
-      if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
-      const encodedEnvId = safeId(rawEnvId, 'environment_id')
-      const params = new URLSearchParams()
-      if (args.limit != null) params.set('limit', String(Number(args.limit)))
-      if (args.event_type ?? args.eventType) params.set('event_type', String(args.event_type ?? args.eventType).trim())
-      const qs = params.toString() ? `?${params.toString()}` : ''
-      return dashboardFetch(auth.pat, `/api/environments/${encodedEnvId}/logs${qs}`)
-    }
-    case 'env_pause': {
-      const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
-      if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
-      const encodedEnvId = safeId(rawEnvId, 'environment_id')
-      return dashboardFetch(auth.pat, `/api/environments/${encodedEnvId}/pause`, {
-        method: 'POST'
-      })
-    }
-    case 'env_resume': {
-      const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
-      if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
-      const encodedEnvId = safeId(rawEnvId, 'environment_id')
-      return dashboardFetch(auth.pat, `/api/environments/${encodedEnvId}/resume`, {
-        method: 'POST'
-      })
-    }
-    case 'env_consult_studio': {
-      const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
-      if (!rawEnvId) throw new Error('environment_id is required; call env_connect, env_create, or env_list first')
-      const encodedEnvId = safeId(rawEnvId, 'environment_id')
-      const message = String(args.message ?? '').trim()
-      if (!message) throw new Error('message is required for env_consult_studio')
-      const body: Record<string, unknown> = {
-        message,
-        channel: 'agent_mcp'
-      }
-      if (args.session_id ?? args.sessionId) {
-        body.session_id = String(args.session_id ?? args.sessionId).trim()
-      }
-      return dashboardFetch(auth.pat, `/api/environments/${encodedEnvId}/studio/chat`, {
-        method: 'POST',
-        body: JSON.stringify(body)
-      })
-    }
-    case 'env_search_clinical_evidence': {
-      const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
-      const query = String(args.query ?? '').trim().toLowerCase()
-      const subpack = String(args.subpack ?? 'all').trim()
-      const specialty = String(args.specialty ?? '').trim().toLowerCase()
-      const catalog = rawEnvId
-        ? await dashboardFetch<Record<string, unknown>>(auth.pat, `/api/environments/${safeId(rawEnvId, 'environment_id')}/open-data`)
-        : await ultraFetch<Record<string, unknown>>(auth.orgId, '/v1/sandbox/research-packs/clinical_knowledge_v1')
-      return {
-        ...catalog,
-        filter_applied: { query: query || null, subpack, specialty: specialty || null }
-      }
-    }
     default:
       throw new Error(`Unknown tool: ${name}`)
   }
@@ -2232,7 +1964,7 @@ export async function validatePat(pat: string) {
     })
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)
-    console.error(`[hebrah-mcp-host] PAT validation unreachable (${config.dashboardUrl}):`, detail)
+    console.error(`[hebrah-mcp-host] PAT validation unreachable (${config.dashboardUrl}):`, redactSecrets(detail))
     throw new Error(
       `Dashboard unreachable at ${config.dashboardUrl}. Start hebrah-app (pnpm dev in hebrah-app/) and reload MCP in Cursor.`
     )

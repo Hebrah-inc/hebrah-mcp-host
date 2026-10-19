@@ -28,6 +28,7 @@ type PendingConfirmation = {
 type Bucket = { count: number, windowStart: number }
 
 const MAX_BUCKETS = 5_000
+const MAX_APPROVE_BUCKETS = 2_000
 const MAX_PENDING_CONFIRMATIONS = 2_000
 
 const callBuckets = new Map<string, Bucket>()
@@ -75,13 +76,22 @@ export async function checkRateLimit(orgId: string, toolName: string): Promise<v
     if (bucket.count > MAX_CALLS_PER_WINDOW) {
       throw new Error(`Rate limit exceeded for ${toolName}. Try again in a minute.`)
     }
-  })
+  }, toolName)
 }
 
 export async function checkPromotionApproveLimit(orgId: string): Promise<void> {
   const key = dayKey(orgId)
   await incrementRateCounter(`promo-approve:${key}`, MAX_PROMOTION_APPROVES_PER_DAY, 86_400, () => {
     const now = Date.now()
+    if (approveBuckets.size >= MAX_APPROVE_BUCKETS && !approveBuckets.has(key)) {
+      for (const [k, b] of approveBuckets) {
+        if (now - b.dayStart > 86_400_000) approveBuckets.delete(k)
+      }
+      if (approveBuckets.size >= MAX_APPROVE_BUCKETS) {
+        const oldest = approveBuckets.keys().next().value
+        if (oldest) approveBuckets.delete(oldest)
+      }
+    }
     const bucket = approveBuckets.get(key) ?? { count: 0, dayStart: now }
     if (now - bucket.dayStart > 86_400_000) {
       bucket.count = 0
@@ -92,7 +102,7 @@ export async function checkPromotionApproveLimit(orgId: string): Promise<void> {
     if (bucket.count > MAX_PROMOTION_APPROVES_PER_DAY) {
       throw new Error('Promotion approve limit reached for today.')
     }
-  })
+  }, 'promotion approval')
 }
 
 export function issueConfirmationToken(

@@ -27,9 +27,18 @@ import {
 } from './tools.js'
 
 const PAT_TOKEN_RE = /^hb_pat_[A-Za-z0-9_-]{6,128}$/
-const AGENT_TOKEN_RE = /^hb_conn_[A-Za-z0-9_-]{6,128}$/
+const AGENT_TOKEN_RE = /^hb_(?:conn|live|test)_[A-Za-z0-9_-]{6,128}$/
+const HEBRAH_CLOUD_RUN_HOST_RE = /^hebrah-[a-z0-9-]+(?:-[a-z0-9]+-[a-z0-9]+)?\.a\.run\.app$/
 const MAX_MCP_SESSIONS = 1_000
 const MAX_BODY_BYTES = 1_048_576
+const MAX_TOOL_OUTPUT_CHARS = 250_000
+const SESSION_IDLE_TTL_MS = 60 * 60 * 1000
+
+const ONE_TIME_SECRET_TOOLS = new Set([
+  'create_account',
+  'create_sandbox_api_key',
+  'rotate_connection_webhook_secret'
+])
 
 export function isAllowedMcpOrigin(originHeader: string | undefined): boolean {
   if (!originHeader) return true
@@ -39,17 +48,34 @@ export function isAllowedMcpOrigin(originHeader: string | undefined): boolean {
   } catch {
     return false
   }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return false
+  }
   const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '')
-  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') return true
-  if (host === 'hebrah.com' || host.endsWith('.hebrah.com')) return true
-  if (host === 'hebrah.dev' || host.endsWith('.hebrah.dev')) return true
-  if (host.endsWith('.run.app')) return true
+  const isLoopback = host === 'localhost' || host === '127.0.0.1' || host === '::1'
+  if (isLoopback) {
+    const isProdCloudRun = Boolean(process.env.K_SERVICE) || process.env.NODE_ENV === 'production'
+    return !isProdCloudRun
+  }
   try {
     const dashOrigin = new URL(config.dashboardUrl).origin
     if (parsed.origin === dashOrigin) return true
   } catch {
     // ignore invalid dashboardUrl
   }
+  const extraAllowed = (process.env.MCP_ALLOWED_ORIGINS ?? '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean)
+  if (extraAllowed.includes(parsed.origin)) {
+    return true
+  }
+  if (parsed.protocol !== 'https:') {
+    return false
+  }
+  if (host === 'hebrah.com' || host.endsWith('.hebrah.com')) return true
+  if (host === 'hebrah.dev' || host.endsWith('.hebrah.dev')) return true
+  if (HEBRAH_CLOUD_RUN_HOST_RE.test(host)) return true
   return false
 }
 
@@ -95,7 +121,7 @@ const MCP_SERVER_INSTRUCTIONS = [
   'For private enterprise data connectors, use discover_data_sources → confirm_action → connect_to_data_source → query_data_source; connections are scoped, read-only, TTL-bound, and auditable.',
   'For application integration code, use the official Node SDK @hebrah/sdk (npm install @hebrah/sdk).',
   'Call get_sdk_reference for full SDK docs, API surface, and MCP-to-SDK mapping — do not web-search npm.',
-  'Agents authenticate with hb_conn_* keys (from POST /v1/agent/account, hebrah login, or create_account); dashboard integrators use hb_pat_* tokens.'
+  'Agents authenticate with hb_conn_*, hb_live_*, or hb_test_* keys (from POST /v1/agent/account, hebrah login, or create_account); dashboard integrators use hb_pat_* tokens.'
 ].join(' ')
 
 function createMcpServer(auth: McpAuth, sessionId: string) {
@@ -135,7 +161,14 @@ function createMcpServer(auth: McpAuth, sessionId: string) {
           outcome: 'ok'
         })
       }
-      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
+      let text = JSON.stringify(result, null, 2)
+      if (!ONE_TIME_SECRET_TOOLS.has(name)) {
+        text = redactSecrets(text)
+      }
+      if (text.length > MAX_TOOL_OUTPUT_CHARS) {
+        text = `${text.slice(0, MAX_TOOL_OUTPUT_CHARS)}\n...[TRUNCATED: output exceeded ${MAX_TOOL_OUTPUT_CHARS} chars]`
+      }
+      return { content: [{ type: 'text', text }] }
     } catch (error) {
       const message = redactSecrets(error instanceof Error ? error.message : String(error))
       if (!auth.bootstrap) {
@@ -161,10 +194,30 @@ interface McpSession {
   server: Server
   auth: McpAuth
   createdAt: number
+  lastActiveAt: number
 }
 
 const BOOTSTRAP_SESSION_TTL_MS = 10 * 60 * 1000
 const mcpSessions = new Map<string, McpSession>()
+
+function evictMcpSession(sid: string, session?: McpSession) {
+  const target = session ?? mcpSessions.get(sid)
+  mcpSessions.delete(sid)
+  deleteSession(sid)
+  if (target) {
+    target.server.close().catch(() => {})
+  }
+}
+
+function sweepExpiredSessions(now = Date.now()) {
+  for (const [sid, session] of mcpSessions.entries()) {
+    const expiredBootstrap = session.auth.bootstrap && now - session.createdAt > BOOTSTRAP_SESSION_TTL_MS
+    const expiredIdle = now - session.lastActiveAt > SESSION_IDLE_TTL_MS
+    if (expiredBootstrap || expiredIdle) {
+      evictMcpSession(sid, session)
+    }
+  }
+}
 
 function redactSessionId(sessionId: string | undefined): string {
   if (!sessionId) return 'new'
@@ -194,6 +247,7 @@ function sessionRequiredResponse(): Response {
 }
 
 async function createMcpSession(auth: McpAuth): Promise<McpSession> {
+  sweepExpiredSessions()
   const sessionId = crypto.randomUUID()
   const server = createMcpServer(auth, sessionId)
   let sessionRef: McpSession | null = null
@@ -206,38 +260,37 @@ async function createMcpSession(auth: McpAuth): Promise<McpSession> {
         if (mcpSessions.size >= MAX_MCP_SESSIONS) {
           const oldest = mcpSessions.keys().next().value
           if (oldest) {
-            mcpSessions.delete(oldest)
-            deleteSession(oldest)
+            evictMcpSession(oldest)
           }
         }
         mcpSessions.set(sid, sessionRef)
       }
     },
     onsessionclosed: (sid) => {
-      mcpSessions.delete(sid)
-      deleteSession(sid)
+      evictMcpSession(sid)
     }
   })
 
   transport.onclose = () => {
     const sid = transport.sessionId
     if (sid) {
-      mcpSessions.delete(sid)
-      deleteSession(sid)
+      evictMcpSession(sid)
     }
   }
 
-  sessionRef = { transport, server, auth, createdAt: Date.now() }
+  const now = Date.now()
+  sessionRef = { transport, server, auth, createdAt: now, lastActiveAt: now }
   await server.connect(transport)
   return sessionRef
 }
 
-const app = new Hono()
+export const app = new Hono()
 
 app.use('*', async (c, next) => {
   await next()
   c.header('X-Content-Type-Options', 'nosniff')
   c.header('X-Frame-Options', 'DENY')
+  c.header('Referrer-Policy', 'no-referrer')
   c.header('Cache-Control', 'no-store')
   c.header('X-Robots-Tag', 'noindex, nofollow, noarchive, nosnippet')
 })
@@ -255,24 +308,16 @@ app.all('/mcp', async (c) => {
     return c.json({ error: 'Payload too large' }, 413)
   }
 
+  sweepExpiredSessions()
   const sessionHeader = c.req.header('mcp-session-id')
-  let existingSession = sessionHeader ? mcpSessions.get(sessionHeader) : undefined
-  if (
-    existingSession?.auth.bootstrap &&
-    Date.now() - existingSession.createdAt > BOOTSTRAP_SESSION_TTL_MS &&
-    sessionHeader
-  ) {
-    mcpSessions.delete(sessionHeader)
-    deleteSession(sessionHeader)
-    existingSession = undefined
-  }
+  const existingSession = sessionHeader ? mcpSessions.get(sessionHeader) : undefined
 
   const bearer = extractBearerToken(c.req.header('authorization'))
 
   let auth: McpAuth
   if (bearer?.kind === 'agent') {
-    // Agent-key session (hb_conn_*): the key is validated by the merged
-    // hebrah-api on every call — no dashboard lookup needed. The hashed key
+    // Agent-key session (hb_conn_* / hb_live_* / hb_test_*): the key is validated
+    // by hebrah-api on every call — no dashboard lookup needed. The hashed key
     // acts as the session-org discriminator.
     const agent = bearer.token
     auth = {
@@ -289,7 +334,7 @@ app.all('/mcp', async (c) => {
     try {
       validated = await validatePat(pat)
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Dashboard unreachable'
+      const message = redactSecrets(error instanceof Error ? error.message : 'Dashboard unreachable')
       return c.json({ error: message }, 503)
     }
     if (!validated) {
@@ -318,8 +363,8 @@ app.all('/mcp', async (c) => {
       bootstrap: true
     }
   } else {
-    console.warn('[mcp] rejected: missing Bearer hb_pat_* / hb_conn_* token')
-    return c.json({ error: 'Missing Bearer token (hb_pat_* for dashboard sessions, hb_conn_* for agent sessions)' }, 401)
+    console.warn('[mcp] rejected: missing Bearer hb_pat_* / hb_conn_* / hb_live_* / hb_test_* token')
+    return c.json({ error: 'Missing Bearer token (hb_pat_* for dashboard sessions, hb_conn_*/hb_live_*/hb_test_* for agent sessions)' }, 401)
   }
 
   const requestSessionId = c.req.header('mcp-session-id') ?? undefined
@@ -361,10 +406,10 @@ app.all('/mcp', async (c) => {
       if (existing.auth.orgId !== auth.orgId) {
         return c.json({ error: 'Session belongs to another organization' }, 403)
       }
+      existing.lastActiveAt = Date.now()
       const response = await existing.transport.handleRequest(c.req.raw, handleOptions)
       if (c.req.method === 'DELETE') {
-        mcpSessions.delete(requestSessionId)
-        deleteSession(requestSessionId)
+        evictMcpSession(requestSessionId, existing)
       }
       return finalizeMcpResponse(response)
     }
@@ -380,7 +425,17 @@ app.all('/mcp', async (c) => {
   return finalizeMcpResponse(await session.transport.handleRequest(c.req.raw, handleOptions))
 })
 
-serve({ fetch: app.fetch, port: config.port }, () => {
-  console.log(`hebrah-mcp-host listening on http://0.0.0.0:${config.port}`)
-  console.log(`[mcp] Cursor clients must use http://localhost:${config.port}/mcp (not 0.0.0.0)`)
-})
+const isTestRunner =
+  process.env.MCP_SKIP_LISTEN === '1' ||
+  process.env.NODE_ENV === 'test' ||
+  Boolean(process.env.NODE_TEST_CONTEXT) ||
+  process.execArgv.includes('--test') ||
+  process.argv.includes('--test')
+
+if (!isTestRunner) {
+  serve({ fetch: app.fetch, port: config.port }, () => {
+    console.log(`hebrah-mcp-host listening on http://0.0.0.0:${config.port}`)
+    console.log(`[mcp] Cursor clients must use http://localhost:${config.port}/mcp (not 0.0.0.0)`)
+  })
+}
+
