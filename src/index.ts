@@ -417,8 +417,28 @@ app.all('/mcp', async (c) => {
     return sessionNotFoundResponse()
   }
 
-  if (c.req.method !== 'POST' || !bodyHasInitialize(parsedBody)) {
+  if (c.req.method !== 'POST') {
     return sessionRequiredResponse()
+  }
+
+  if (!bodyHasInitialize(parsedBody)) {
+    if (parsedBody === undefined) {
+      return sessionRequiredResponse()
+    }
+    const statelessSessionId = `stateless-${crypto.randomUUID()}`
+    const statelessServer = createMcpServer(auth, statelessSessionId)
+    const statelessTransport = new WebStandardStreamableHTTPServerTransport({
+      sessionIdGenerator: undefined,
+      enableJsonResponse: true
+    })
+    await statelessServer.connect(statelessTransport)
+    try {
+      const response = await statelessTransport.handleRequest(c.req.raw, handleOptions)
+      return finalizeMcpResponse(response)
+    } finally {
+      statelessServer.close().catch(() => {})
+      deleteSession(statelessSessionId)
+    }
   }
 
   const session = await createMcpSession(auth)
