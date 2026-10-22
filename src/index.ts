@@ -293,6 +293,11 @@ app.use('*', async (c, next) => {
   c.header('Referrer-Policy', 'no-referrer')
   c.header('Cache-Control', 'no-store')
   c.header('X-Robots-Tag', 'noindex, nofollow, noarchive, nosnippet')
+  c.header('X-Permitted-Cross-Domain-Policies', 'none')
+  c.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()')
+  if (c.req.header('x-forwarded-proto') === 'https' || process.env.NODE_ENV === 'production') {
+    c.header('Strict-Transport-Security', 'max-age=63072000; includeSubDomains; preload')
+  }
 })
 
 app.get('/robots.txt', c => c.text('User-agent: *\nDisallow: /\n'))
