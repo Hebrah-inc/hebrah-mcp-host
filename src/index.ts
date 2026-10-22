@@ -246,25 +246,29 @@ function sessionRequiredResponse(): Response {
   )
 }
 
-async function createMcpSession(auth: McpAuth): Promise<McpSession> {
+async function createMcpSession(auth: McpAuth, requestedSessionId?: string): Promise<McpSession> {
   sweepExpiredSessions()
-  const sessionId = crypto.randomUUID()
+  const sessionId = requestedSessionId ?? crypto.randomUUID()
   const server = createMcpServer(auth, sessionId)
   let sessionRef: McpSession | null = null
+
+  const registerSession = (sid: string) => {
+    if (sessionRef) {
+      if (!mcpSessions.has(sid) && mcpSessions.size >= MAX_MCP_SESSIONS) {
+        const oldest = mcpSessions.keys().next().value
+        if (oldest) {
+          evictMcpSession(oldest)
+        }
+      }
+      mcpSessions.set(sid, sessionRef)
+    }
+  }
 
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: () => sessionId,
     enableJsonResponse: true,
     onsessioninitialized: (sid) => {
-      if (sessionRef) {
-        if (mcpSessions.size >= MAX_MCP_SESSIONS) {
-          const oldest = mcpSessions.keys().next().value
-          if (oldest) {
-            evictMcpSession(oldest)
-          }
-        }
-        mcpSessions.set(sid, sessionRef)
-      }
+      registerSession(sid)
     },
     onsessionclosed: (sid) => {
       evictMcpSession(sid)
@@ -281,6 +285,17 @@ async function createMcpSession(auth: McpAuth): Promise<McpSession> {
   const now = Date.now()
   sessionRef = { transport, server, auth, createdAt: now, lastActiveAt: now }
   await server.connect(transport)
+
+  if (requestedSessionId) {
+    const internalTransport = transport as unknown as {
+      sessionId?: string
+      _initialized?: boolean
+    }
+    internalTransport.sessionId = sessionId
+    internalTransport._initialized = true
+    registerSession(sessionId)
+  }
+
   return sessionRef
 }
 
@@ -415,6 +430,17 @@ app.all('/mcp', async (c) => {
       const response = await existing.transport.handleRequest(c.req.raw, handleOptions)
       if (c.req.method === 'DELETE') {
         evictMcpSession(requestSessionId, existing)
+      }
+      return finalizeMcpResponse(response)
+    }
+    if (!auth.bootstrap && /^[a-zA-Z0-9_-]{8,128}$/.test(requestSessionId)) {
+      console.info(
+        `[mcp] re-hydrating cold-start session ${redactSessionId(requestSessionId)} for org=${auth.orgId}`
+      )
+      const rehydrated = await createMcpSession(auth, requestSessionId)
+      const response = await rehydrated.transport.handleRequest(c.req.raw, handleOptions)
+      if (c.req.method === 'DELETE') {
+        evictMcpSession(requestSessionId, rehydrated)
       }
       return finalizeMcpResponse(response)
     }
