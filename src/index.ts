@@ -34,6 +34,100 @@ const MAX_BODY_BYTES = 1_048_576
 const MAX_TOOL_OUTPUT_CHARS = 250_000
 const SESSION_IDLE_TTL_MS = 60 * 60 * 1000
 
+const MCP_RATE_WINDOW_MS = 60_000
+const MCP_RATE_MAX_REQUESTS = 120
+const MCP_AUTH_FAIL_WINDOW_MS = 5 * 60_000
+const MCP_AUTH_FAIL_MAX = 15
+const MCP_AUTH_LOCKOUT_MS = 15 * 60_000
+const MAX_TRACKED_IPS = 5_000
+
+interface IpRateEntry {
+  count: number
+  resetAt: number
+}
+
+interface IpAuthFailEntry {
+  failures: number
+  windowResetAt: number
+  lockedUntil: number
+}
+
+const ipRateLimits = new Map<string, IpRateEntry>()
+const ipAuthFailures = new Map<string, IpAuthFailEntry>()
+
+export function resetMcpRateLimitState(): void {
+  ipRateLimits.clear()
+  ipAuthFailures.clear()
+}
+
+function extractClientIp(xffHeader: string | undefined, cfIpHeader: string | undefined): string {
+  if (cfIpHeader && cfIpHeader.trim()) {
+    return cfIpHeader.trim().slice(0, 64)
+  }
+  if (xffHeader) {
+    const parts = xffHeader.split(',').map(s => s.trim()).filter(Boolean)
+    if (parts.length > 0) {
+      return parts[parts.length - 1]!.slice(0, 64)
+    }
+  }
+  return 'local'
+}
+
+function checkIpRateLimit(ip: string, now = Date.now()): { allowed: boolean, retryAfterSec: number } {
+  const existing = ipRateLimits.get(ip)
+  if (!existing || now >= existing.resetAt) {
+    if (ipRateLimits.size >= MAX_TRACKED_IPS) {
+      const oldestKey = ipRateLimits.keys().next().value
+      if (oldestKey) ipRateLimits.delete(oldestKey)
+    }
+    ipRateLimits.set(ip, { count: 1, resetAt: now + MCP_RATE_WINDOW_MS })
+    return { allowed: true, retryAfterSec: 0 }
+  }
+  existing.count += 1
+  if (existing.count > MCP_RATE_MAX_REQUESTS) {
+    return {
+      allowed: false,
+      retryAfterSec: Math.max(1, Math.ceil((existing.resetAt - now) / 1000))
+    }
+  }
+  return { allowed: true, retryAfterSec: 0 }
+}
+
+function checkIpAuthLockout(ip: string, now = Date.now()): { locked: boolean, retryAfterSec: number } {
+  const entry = ipAuthFailures.get(ip)
+  if (!entry) return { locked: false, retryAfterSec: 0 }
+  if (entry.lockedUntil > now) {
+    return {
+      locked: true,
+      retryAfterSec: Math.max(1, Math.ceil((entry.lockedUntil - now) / 1000))
+    }
+  }
+  if (now >= entry.windowResetAt) {
+    ipAuthFailures.delete(ip)
+  }
+  return { locked: false, retryAfterSec: 0 }
+}
+
+function recordIpAuthFailure(ip: string, now = Date.now()): void {
+  const existing = ipAuthFailures.get(ip)
+  if (!existing || now >= existing.windowResetAt) {
+    if (ipAuthFailures.size >= MAX_TRACKED_IPS) {
+      const oldestKey = ipAuthFailures.keys().next().value
+      if (oldestKey) ipAuthFailures.delete(oldestKey)
+    }
+    ipAuthFailures.set(ip, {
+      failures: 1,
+      windowResetAt: now + MCP_AUTH_FAIL_WINDOW_MS,
+      lockedUntil: 0
+    })
+    return
+  }
+  existing.failures += 1
+  if (existing.failures >= MCP_AUTH_FAIL_MAX) {
+    existing.lockedUntil = now + MCP_AUTH_LOCKOUT_MS
+  }
+}
+
 const ONE_TIME_SECRET_TOOLS = new Set([
   'create_account',
   'create_sandbox_api_key',
@@ -320,7 +414,20 @@ app.get('/robots.txt', c => c.text('User-agent: *\nDisallow: /\n'))
 app.get('/health', c => c.json({ ok: true }))
 
 app.all('/mcp', async (c) => {
+  const clientIp = extractClientIp(c.req.header('x-forwarded-for'), c.req.header('cf-connecting-ip'))
+  const lockout = checkIpAuthLockout(clientIp)
+  if (lockout.locked) {
+    c.header('Retry-After', String(lockout.retryAfterSec))
+    return c.json({ error: 'Too many failed authentication attempts. IP temporarily blocked.' }, 429)
+  }
+  const rateCheck = checkIpRateLimit(clientIp)
+  if (!rateCheck.allowed) {
+    c.header('Retry-After', String(rateCheck.retryAfterSec))
+    return c.json({ error: 'Rate limit exceeded' }, 429)
+  }
+
   if (!isAllowedMcpOrigin(c.req.header('origin'))) {
+    recordIpAuthFailure(clientIp)
     return c.json({ error: 'Origin not allowed' }, 403)
   }
   const contentLength = Number(c.req.header('content-length') ?? '0')
@@ -332,7 +439,14 @@ app.all('/mcp', async (c) => {
   const sessionHeader = c.req.header('mcp-session-id')
   const existingSession = sessionHeader ? mcpSessions.get(sessionHeader) : undefined
 
-  const bearer = extractBearerToken(c.req.header('authorization'))
+  const rawAuthHeader = c.req.header('authorization')
+  const bearer = extractBearerToken(rawAuthHeader)
+
+  if (rawAuthHeader && rawAuthHeader.trim().length > 0 && !bearer) {
+    recordIpAuthFailure(clientIp)
+    console.warn('[mcp] rejected: malformed Authorization header')
+    return c.json({ error: 'Invalid or expired token' }, 401)
+  }
 
   let auth: McpAuth
   if (bearer?.kind === 'agent') {
@@ -358,6 +472,7 @@ app.all('/mcp', async (c) => {
       return c.json({ error: message }, 503)
     }
     if (!validated) {
+      recordIpAuthFailure(clientIp)
       console.warn('[mcp] rejected: invalid or expired PAT')
       return c.json({ error: 'Invalid or expired token' }, 401)
     }
@@ -383,6 +498,7 @@ app.all('/mcp', async (c) => {
       bootstrap: true
     }
   } else {
+    recordIpAuthFailure(clientIp)
     console.warn('[mcp] rejected: missing Bearer hb_pat_* / hb_conn_* / hb_live_* / hb_test_* token')
     return c.json({ error: 'Missing Bearer token (hb_pat_* for dashboard sessions, hb_conn_*/hb_live_*/hb_test_* for agent sessions)' }, 401)
   }
