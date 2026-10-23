@@ -37,8 +37,8 @@ const SESSION_IDLE_TTL_MS = 60 * 60 * 1000
 const MCP_RATE_WINDOW_MS = 60_000
 const MCP_RATE_MAX_REQUESTS = 120
 const MCP_AUTH_FAIL_WINDOW_MS = 5 * 60_000
-const MCP_AUTH_FAIL_MAX = 15
-const MCP_AUTH_LOCKOUT_MS = 15 * 60_000
+const MCP_AUTH_FAIL_MAX = 60
+const MCP_AUTH_LOCKOUT_MS = 5 * 60_000
 const MAX_TRACKED_IPS = 5_000
 
 interface IpRateEntry {
@@ -60,14 +60,24 @@ export function resetMcpRateLimitState(): void {
   ipAuthFailures.clear()
 }
 
+function isTrustedProxyIp(ip: string): boolean {
+  return ip === '127.0.0.1' || ip === '::1' || ip.startsWith('169.254.')
+}
+
 function extractClientIp(xffHeader: string | undefined, cfIpHeader: string | undefined): string {
   if (cfIpHeader && cfIpHeader.trim()) {
     return cfIpHeader.trim().slice(0, 64)
   }
   if (xffHeader) {
     const parts = xffHeader.split(',').map(s => s.trim()).filter(Boolean)
+    for (let i = parts.length - 1; i >= 0; i--) {
+      const candidate = parts[i]!
+      if (!isTrustedProxyIp(candidate)) {
+        return candidate.slice(0, 64)
+      }
+    }
     if (parts.length > 0) {
-      return parts[parts.length - 1]!.slice(0, 64)
+      return parts[0]!.slice(0, 64)
     }
   }
   return 'local'
@@ -498,7 +508,8 @@ app.all('/mcp', async (c) => {
       bootstrap: true
     }
   } else {
-    recordIpAuthFailure(clientIp)
+    // Do not penalize missing-header probes from MCP clients (Cursor, Claude Desktop)
+    // during capability negotiation — only explicit invalid credentials count toward lockout.
     console.warn('[mcp] rejected: missing Bearer hb_pat_* / hb_conn_* / hb_live_* / hb_test_* token')
     return c.json({ error: 'Missing Bearer token (hb_pat_* for dashboard sessions, hb_conn_*/hb_live_*/hb_test_* for agent sessions)' }, 401)
   }
