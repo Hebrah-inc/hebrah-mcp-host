@@ -294,7 +294,8 @@ export const AGENT_TOOL_NAMES = [
   'env_pause',
   'env_resume',
   'env_consult_studio',
-  'env_search_clinical_evidence'
+  'env_search_clinical_evidence',
+  'get_sdk_reference'
 ] as const
 
 export const agentToolDefinitions = [
@@ -431,6 +432,11 @@ export const agentToolDefinitions = [
     name: 'env_search_clinical_evidence',
     description: 'Search the Open-Data Clinical Knowledge & Evidence Enrichment Pack (clinical_knowledge_v1 + dicom_imaging_v1: vignettes, clinical guidelines, PrimeKG biomedical graph pathways, calculators, and de-identified DICOM exemplars)',
     inputSchema: listToolInputSchema('env_search_clinical_evidence')
+  },
+  {
+    name: 'get_sdk_reference',
+    description: 'Official @hebrah/sdk & hebrah Python SDK guide (v0.9.2): install, env vars, methods, webhook verification, and MCP→SDK mapping',
+    inputSchema: listToolInputSchema('get_sdk_reference')
   }
 ] as const
 
@@ -972,6 +978,10 @@ export async function callTool(
       }
       case 'get_usage_forecast':
         return agentApiFetch(auth, '/v1/agent/wallet')
+      case 'get_sdk_reference': {
+        const connectionId = String(args.connectionId ?? args.connection_id ?? session.connectConnectionId ?? '').trim()
+        return buildSdkReference(connectionId || undefined)
+      }
       case 'revoke_data_source_connection': {
         const rawId = String(args.connectionId ?? session.connectConnectionId ?? '').trim()
         if (!rawId) throw new Error('connectionId is required; call connect_to_data_source first')
