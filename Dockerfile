@@ -1,8 +1,8 @@
-FROM --platform=linux/amd64 node:22-alpine AS builder
+FROM --platform=linux/amd64 node:22.23.4-alpine AS builder
 
 WORKDIR /app
 
-RUN apk update && apk upgrade --no-cache && apk add --no-cache ca-certificates openssl && corepack enable
+RUN apk update && apk upgrade --no-cache && apk add --no-cache ca-certificates openssl brotli-libs libcrypto3 libssl3 sqlite-libs c-ares nghttp2-libs && corepack enable
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile --ignore-scripts
@@ -14,12 +14,14 @@ RUN find . \( -name '._*' -o -name '.DS_Store' \) -delete
 # Generated SDK reference is committed; skip prebuild sync (needs hebrah-sdk-node sibling).
 RUN pnpm exec tsc
 
-FROM --platform=linux/amd64 node:22-alpine AS runner
+FROM --platform=linux/amd64 node:22.23.4-alpine AS runner
 
 WORKDIR /app
 
-# Upgrade Alpine base (libcrypto3 / libssl3 3.5.9+) and CA certificates
-RUN apk update && apk upgrade --no-cache && apk add --no-cache ca-certificates openssl
+# Upgrade Alpine base (Node >= 22.23.4, brotli-libs, libcrypto3 / libssl3, sqlite-libs, c-ares, nghttp2-libs) and CA certificates
+RUN apk update && apk upgrade --no-cache && \
+    apk add --no-cache ca-certificates openssl brotli-libs libcrypto3 libssl3 sqlite-libs c-ares nghttp2-libs && \
+    node -e "const [maj,min,pat]=process.versions.node.split('.').map(Number); if(maj<22||(maj===22&&(min<23||(min===23&&pat<4)))) { console.error('Unpatched Node version:', process.versions.node); process.exit(1); }"
 
 ENV NODE_ENV=production
 ENV PORT=3021

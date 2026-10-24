@@ -197,6 +197,32 @@ export function extractBearerToken(authHeader: string | undefined): { token: str
   return null
 }
 
+export function isValidMcpHostHeader(host: string | undefined): boolean {
+  if (host === undefined) return true
+  const cleaned = host.trim()
+  if (!cleaned || cleaned.length > 255) return false
+  for (let i = 0; i < cleaned.length; i++) {
+    const code = cleaned.charCodeAt(i)
+    const ch = cleaned[i]!
+    if (code <= 32 || code >= 127 || '/\\?#@%'.includes(ch)) {
+      return false
+    }
+  }
+  return true
+}
+
+export function isAllowedMcpContentEncoding(encoding: string | undefined): boolean {
+  if (!encoding) return true
+  const normalized = encoding.trim().toLowerCase()
+  return normalized === '' || normalized === 'identity'
+}
+
+export function computePrincipalHash(auth: McpAuth): string {
+  if (auth.bootstrap) return 'bootstrap'
+  const raw = auth.mode === 'agent' ? `agent:${auth.agentKey ?? ''}` : `pat:${auth.pat}`
+  return createHash('sha256').update(raw).digest('hex')
+}
+
 function policyDecisionFromError(message: string): string {
   if (message.includes('read-only')) return 'deny_live_write'
   if (message.includes('disabled for this organization')) return 'deny_mcp_acl'
@@ -303,6 +329,7 @@ interface McpSession {
   transport: WebStandardStreamableHTTPServerTransport
   server: Server
   auth: McpAuth
+  principalHash: string
   createdAt: number
   lastActiveAt: number
 }
@@ -393,7 +420,14 @@ async function createMcpSession(auth: McpAuth, requestedSessionId?: string): Pro
   }
 
   const now = Date.now()
-  sessionRef = { transport, server, auth, createdAt: now, lastActiveAt: now }
+  sessionRef = {
+    transport,
+    server,
+    auth,
+    principalHash: computePrincipalHash(auth),
+    createdAt: now,
+    lastActiveAt: now
+  }
   await server.connect(transport)
 
   if (requestedSessionId) {
@@ -411,8 +445,7 @@ async function createMcpSession(auth: McpAuth, requestedSessionId?: string): Pro
 
 export const app = new Hono()
 
-app.use('*', async (c, next) => {
-  await next()
+function applyMcpSecurityHeaders(c: { header: (name: string, value: string) => void, req: { header: (name: string) => string | undefined } }) {
   c.header('X-Content-Type-Options', 'nosniff')
   c.header('X-Frame-Options', 'DENY')
   c.header('Referrer-Policy', 'no-referrer')
@@ -423,6 +456,24 @@ app.use('*', async (c, next) => {
   if (c.req.header('x-forwarded-proto') === 'https' || process.env.NODE_ENV === 'production') {
     c.header('Strict-Transport-Security', 'max-age=63072000; includeSubDomains; preload')
   }
+}
+
+app.use('*', async (c, next) => {
+  applyMcpSecurityHeaders(c)
+  const rawHost = c.req.header('host')
+  if (rawHost !== undefined && !isValidMcpHostHeader(rawHost)) {
+    return c.json({ error: 'Invalid Host header' }, 400)
+  }
+  const rawEncoding = c.req.header('content-encoding')
+  if (rawEncoding !== undefined && !isAllowedMcpContentEncoding(rawEncoding)) {
+    c.header('Accept-Encoding', 'identity')
+    return c.json(
+      { error: 'Unsupported Content-Encoding; compressed request bodies are not accepted' },
+      415
+    )
+  }
+  await next()
+  applyMcpSecurityHeaders(c)
 })
 
 app.get('/robots.txt', c => c.text('User-agent: *\nDisallow: /\n'))
@@ -558,6 +609,9 @@ app.all('/mcp', async (c) => {
     if (existing) {
       if (existing.auth.orgId !== auth.orgId) {
         return c.json({ error: 'Session belongs to another organization' }, 403)
+      }
+      if (!existing.auth.bootstrap && existing.principalHash !== computePrincipalHash(auth)) {
+        return c.json({ error: 'Session belongs to a different token principal' }, 403)
       }
       existing.lastActiveAt = Date.now()
       const response = await existing.transport.handleRequest(c.req.raw, handleOptions)
