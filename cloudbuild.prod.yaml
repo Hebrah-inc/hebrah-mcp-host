@@ -1,0 +1,48 @@
+steps:
+  # 1. Pull previous image for remote layer cache (ignore if not found)
+  - name: 'gcr.io/cloud-builders/docker'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        docker pull ${_IMAGE_URI}:latest || true
+
+  # 2. Build image with Docker BuildKit and remote cache
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '--cache-from=${_IMAGE_URI}:latest'
+      - '-t'
+      - '${_IMAGE_URI}:${SHORT_SHA}'
+      - '-t'
+      - '${_IMAGE_URI}:latest'
+      - '-f'
+      - 'Dockerfile'
+      - '.'
+    env:
+      - 'DOCKER_BUILDKIT=1'
+
+  # 3. Push both tagged revisions to Google Artifact Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', '--all-tags', '${_IMAGE_URI}']
+
+  # 4. Deploy revision to Cloud Run (Production)
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'gcloud'
+    args:
+      - 'run'
+      - 'services'
+      - 'update'
+      - '${_SERVICE_NAME}'
+      - '--region=${_REGION}'
+      - '--image=${_IMAGE_URI}:${SHORT_SHA}'
+      - '--quiet'
+
+substitutions:
+  _REGION: 'us-central1'
+  _IMAGE_URI: 'us-central1-docker.pkg.dev/hebrah-heros-sword-v1/hebrah-docker/hebrah-mcp-host'
+  _SERVICE_NAME: 'hebrah-prod-mcp'
+
+options:
+  machineType: 'E2_HIGHCPU_8'
+  logging: CLOUD_LOGGING_ONLY
