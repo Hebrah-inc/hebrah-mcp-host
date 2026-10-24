@@ -28,7 +28,7 @@ import {
 
 const PAT_TOKEN_RE = /^hb_pat_[A-Za-z0-9_-]{6,128}$/
 const AGENT_TOKEN_RE = /^hb_(?:conn|live|test)_[A-Za-z0-9_-]{6,128}$/
-const HEBRAH_CLOUD_RUN_HOST_RE = /^hebrah-[a-z0-9-]+(?:-[a-z0-9]+-[a-z0-9]+)?\.a\.run\.app$/
+const HEBRAH_CLOUD_RUN_HOST_RE = /^hebrah-[a-z0-9-]+(?:-[a-z0-9]+-[a-z0-9]+)?\.(?:a|[a-z]+-[a-z0-9]+)\.run\.app$/
 const MAX_MCP_SESSIONS = 1_000
 const MAX_BODY_BYTES = 1_048_576
 const MAX_TOOL_OUTPUT_CHARS = 250_000
