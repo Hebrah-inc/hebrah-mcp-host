@@ -18,13 +18,19 @@ export type SdkReferenceResult = {
   }
 }
 
+function resolveApiBaseUrl(): string {
+  const raw = (process.env.HEBRAH_API_URL || 'https://api.hebrah.com').trim().replace(/\/$/, '')
+  return raw || 'https://api.hebrah.com'
+}
+
 function connectionEnvSnippet(connectionId: string): string {
+  const apiBaseUrl = resolveApiBaseUrl()
   return [
     '# Connection-scoped .env for local demo apps',
     '',
     'HEBRAH_API_KEY=hb_test_...          # from onboarding Step 2 or dashboard Credentials',
     `HEBRAH_CONNECTION_ID=${connectionId}`,
-    'HEBRAH_API_BASE_URL=http://localhost:8000',
+    `HEBRAH_API_BASE_URL=${apiBaseUrl}`,
     'HEBRAH_WEBHOOK_SECRET=hbsec_...     # from onboarding Step 2 — write to demo .env',
     '',
     '# After building your local receiver, wire the connection webhook URL via MCP:',

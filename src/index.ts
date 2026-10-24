@@ -161,9 +161,12 @@ export function isAllowedMcpOrigin(originHeader: string | undefined): boolean {
     const isProdCloudRun = Boolean(process.env.K_SERVICE) || process.env.NODE_ENV === 'production'
     return !isProdCloudRun
   }
+  let isProdDashboard = false
   try {
-    const dashOrigin = new URL(config.dashboardUrl).origin
-    if (parsed.origin === dashOrigin) return true
+    const dashUrl = new URL(config.dashboardUrl)
+    if (parsed.origin === dashUrl.origin) return true
+    const dashHost = dashUrl.hostname.toLowerCase()
+    isProdDashboard = dashHost === 'hebrah.com' || dashHost.endsWith('.hebrah.com')
   } catch {
     // ignore invalid dashboardUrl
   }
@@ -178,6 +181,9 @@ export function isAllowedMcpOrigin(originHeader: string | undefined): boolean {
     return false
   }
   if (host === 'hebrah.com' || host.endsWith('.hebrah.com')) return true
+  if (isProdDashboard) {
+    return false
+  }
   if (host === 'hebrah.dev' || host.endsWith('.hebrah.dev')) return true
   if (HEBRAH_CLOUD_RUN_HOST_RE.test(host)) return true
   return false
