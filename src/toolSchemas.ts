@@ -346,6 +346,73 @@ export function listToolInputSchema(toolName: string) {
           addon: { type: 'string' as const, enum: ['postgres', 'sqlite'] as const, description: 'Database module (default: postgres)' }
         }
       }
+    case 'env_db_execute':
+      return {
+        type: 'object' as const,
+        required: ['sql'],
+        properties: {
+          environment_id: { type: 'string' as const, description: 'Environment ID (defaults to active session environment)' },
+          sql: { type: 'string' as const, description: 'Stateful SQL write or DDL statement (CREATE TABLE, INSERT, UPDATE, DELETE, ALTER TABLE) scoped to the environment database' },
+          addon: { type: 'string' as const, enum: ['postgres', 'sqlite'] as const, description: 'Database module (default: postgres)' }
+        }
+      }
+    case 'env_vector_upsert':
+      return {
+        type: 'object' as const,
+        required: ['points'],
+        properties: {
+          environment_id: { type: 'string' as const, description: 'Environment ID (defaults to active session environment)' },
+          collection: { type: 'string' as const, description: 'Vector collection name (default: clinical_embeddings)' },
+          points: {
+            type: 'array' as const,
+            items: { type: 'object' as const },
+            description: 'Points to upsert ({ id, text, vector?, metadata? })'
+          }
+        }
+      }
+    case 'env_vector_search':
+      return {
+        type: 'object' as const,
+        properties: {
+          environment_id: { type: 'string' as const, description: 'Environment ID (defaults to active session environment)' },
+          collection: { type: 'string' as const, description: 'Vector collection name (default: clinical_embeddings)' },
+          query_text: { type: 'string' as const, description: 'Natural-language clinical search query' },
+          query_vector: { type: 'array' as const, items: { type: 'number' as const }, description: 'Optional explicit query embedding vector' },
+          top_k: { type: 'number' as const, description: 'Maximum matches to return (1-100, default: 5)' }
+        }
+      }
+    case 'env_graph_cypher':
+      return {
+        type: 'object' as const,
+        required: ['query'],
+        properties: {
+          environment_id: { type: 'string' as const, description: 'Environment ID (defaults to active session environment)' },
+          query: { type: 'string' as const, description: 'Neo4j Cypher query (MATCH/RETURN or CREATE/MERGE/SET when write=true)' },
+          params: { type: 'object' as const, description: 'Optional Cypher query parameter dictionary' },
+          write: { type: 'boolean' as const, description: 'Set true to execute a write Cypher statement (CREATE, MERGE, SET, DELETE)' }
+        }
+      }
+    case 'env_promote_ehr':
+      return {
+        type: 'object' as const,
+        required: ['upstream_connection_id'],
+        properties: {
+          environment_id: { type: 'string' as const, description: 'Environment ID (defaults to active session environment)' },
+          upstream_connection_id: { type: 'string' as const, description: 'Connected EHR connection ID to bind as the upstream clinical data source' },
+          baa_accepted: { type: 'boolean' as const, description: 'Confirm HIPAA BAA acceptance for real PHI promotion (default: true)' },
+          sync_initial_cohort: { type: 'boolean' as const, description: 'Immediately sync upstream cohort into attached database modules (default: true)' }
+        }
+      }
+    case 'env_sync_connector':
+      return {
+        type: 'object' as const,
+        required: ['connection_id'],
+        properties: {
+          environment_id: { type: 'string' as const, description: 'Environment ID (defaults to active session environment)' },
+          connection_id: { type: 'string' as const, description: 'Source Connector ID to pull records from into this environment' },
+          limit: { type: 'number' as const, description: 'Maximum records to sync (1-500, default: 50)' }
+        }
+      }
     case 'env_record_outcome':
       return {
         type: 'object' as const,

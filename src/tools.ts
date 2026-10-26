@@ -288,6 +288,12 @@ export const AGENT_TOOL_NAMES = [
   'env_get',
   'env_list_tables',
   'env_query_db',
+  'env_db_execute',
+  'env_vector_upsert',
+  'env_vector_search',
+  'env_graph_cypher',
+  'env_promote_ehr',
+  'env_sync_connector',
   'env_record_outcome',
   'env_trigger_scenario',
   'env_list_patients',
@@ -391,6 +397,36 @@ export const agentToolDefinitions = [
     name: 'env_query_db',
     description: 'Execute a read-only SQL query against an environment database module via credential-blind proxy',
     inputSchema: listToolInputSchema('env_query_db')
+  },
+  {
+    name: 'env_db_execute',
+    description: 'Execute a stateful SQL write or DDL statement (CREATE TABLE, INSERT, UPDATE, DELETE, ALTER TABLE) against an attached postgres or sqlite database module',
+    inputSchema: listToolInputSchema('env_db_execute')
+  },
+  {
+    name: 'env_vector_upsert',
+    description: 'Upsert vector embeddings and clinical metadata into an attached Qdrant vector database collection',
+    inputSchema: listToolInputSchema('env_vector_upsert')
+  },
+  {
+    name: 'env_vector_search',
+    description: 'Run semantic vector similarity search against an attached Qdrant vector database collection',
+    inputSchema: listToolInputSchema('env_vector_search')
+  },
+  {
+    name: 'env_graph_cypher',
+    description: 'Execute a Neo4j Cypher read or write query against the environment clinical knowledge graph',
+    inputSchema: listToolInputSchema('env_graph_cypher')
+  },
+  {
+    name: 'env_promote_ehr',
+    description: 'Promote an isolated environment from synthetic EHR mode to connected_ehr mode bound to a real EHR connector under a BAA gate',
+    inputSchema: listToolInputSchema('env_promote_ehr')
+  },
+  {
+    name: 'env_sync_connector',
+    description: 'Pull clinical records from a Connector into the environment clinical endpoints and attached database modules',
+    inputSchema: listToolInputSchema('env_sync_connector')
   },
   {
     name: 'env_record_outcome',
@@ -580,6 +616,12 @@ export const toolDefinitions = [
   { name: 'env_get', description: 'Get details, connection endpoints, and database module status for an isolated environment' },
   { name: 'env_list_tables', description: 'Inspect all database tables, live row counts, and column schemas in the environment isolated database' },
   { name: 'env_query_db', description: 'Execute a read-only SQL query against an environment database module via credential-blind proxy' },
+  { name: 'env_db_execute', description: 'Execute a stateful SQL write or DDL statement (CREATE TABLE, INSERT, UPDATE, DELETE, ALTER TABLE) against an attached postgres or sqlite database module' },
+  { name: 'env_vector_upsert', description: 'Upsert vector embeddings and clinical metadata into an attached Qdrant vector database collection' },
+  { name: 'env_vector_search', description: 'Run semantic vector similarity search against an attached Qdrant vector database collection' },
+  { name: 'env_graph_cypher', description: 'Execute a Neo4j Cypher read or write query against the environment clinical knowledge graph' },
+  { name: 'env_promote_ehr', description: 'Promote an isolated environment from synthetic EHR mode to connected_ehr mode bound to a real EHR connector under a BAA gate' },
+  { name: 'env_sync_connector', description: 'Pull clinical records from a Connector into the environment clinical endpoints and attached database modules' },
   { name: 'env_record_outcome', description: 'Persist a structured clinical finding or outcome into the environment app_outcomes table (protected by inbound DLP filter)' },
   { name: 'env_trigger_scenario', description: 'Trigger a synthetic clinical workflow scenario with live HL7 WebSocket alerts' },
   { name: 'env_list_patients', description: 'List synthetic patients in the environment EHR with multi-facet filtering by department, diagnosis pathway, treatment modality, or acuity' },
@@ -789,6 +831,90 @@ async function executeEnvironmentTool(
       return envFetch(`${envPrefix}/${encodedEnvId}/db/query`, {
         method: 'POST',
         body: JSON.stringify({ sql, addon, actor_type: 'agent' })
+      })
+    }
+    case 'env_db_execute': {
+      const { encodedEnvId } = resolveEnvId()
+      const sql = String(args.sql ?? args.query ?? '').trim()
+      if (!sql) throw new Error('sql is required')
+      const addon = String(args.addon ?? args.pack ?? 'postgres').trim()
+      return envFetch(`${envPrefix}/${encodedEnvId}/db/execute`, {
+        method: 'POST',
+        body: JSON.stringify({ sql, addon, actor_type: 'agent' })
+      })
+    }
+    case 'env_vector_upsert': {
+      const { encodedEnvId } = resolveEnvId()
+      const collection = String(args.collection ?? 'clinical_embeddings').trim()
+      const points = Array.isArray(args.points) ? args.points : []
+      if (points.length === 0) throw new Error('points array is required')
+      return envFetch(`${envPrefix}/${encodedEnvId}/vector/upsert`, {
+        method: 'POST',
+        body: JSON.stringify({ collection, points, actor_type: 'agent' })
+      })
+    }
+    case 'env_vector_search': {
+      const { encodedEnvId } = resolveEnvId()
+      const collection = String(args.collection ?? 'clinical_embeddings').trim()
+      const body: Record<string, unknown> = {
+        collection,
+        top_k: Number(args.top_k ?? args.topK ?? 5),
+        actor_type: 'agent'
+      }
+      if (args.query_text ?? args.queryText ?? args.query) {
+        body.query_text = String(args.query_text ?? args.queryText ?? args.query)
+      }
+      if (Array.isArray(args.query_vector ?? args.queryVector)) {
+        body.query_vector = args.query_vector ?? args.queryVector
+      }
+      return envFetch(`${envPrefix}/${encodedEnvId}/vector/query`, {
+        method: 'POST',
+        body: JSON.stringify(body)
+      })
+    }
+    case 'env_graph_cypher': {
+      const { encodedEnvId } = resolveEnvId()
+      const query = String(args.query ?? args.cypher ?? '').trim()
+      if (!query) throw new Error('query is required')
+      const write = Boolean(args.write)
+      const endpoint = write ? 'write' : 'cypher'
+      const body: Record<string, unknown> = {
+        query,
+        actor_type: 'agent'
+      }
+      if (args.params && typeof args.params === 'object') {
+        body.params = args.params
+      }
+      return envFetch(`${envPrefix}/${encodedEnvId}/graph/${endpoint}`, {
+        method: 'POST',
+        body: JSON.stringify(body)
+      })
+    }
+    case 'env_promote_ehr': {
+      const { encodedEnvId } = resolveEnvId()
+      const upstreamConnectionId = String(
+        args.upstream_connection_id ?? args.upstreamConnectionId ?? args.connection_id ?? ''
+      ).trim()
+      if (!upstreamConnectionId) throw new Error('upstream_connection_id is required')
+      return envFetch(`${envPrefix}/${encodedEnvId}/promote-ehr`, {
+        method: 'POST',
+        body: JSON.stringify({
+          upstream_connection_id: safeId(upstreamConnectionId, 'upstream_connection_id'),
+          baa_accepted: args.baa_accepted !== undefined ? Boolean(args.baa_accepted) : true,
+          sync_initial_cohort: args.sync_initial_cohort !== undefined ? Boolean(args.sync_initial_cohort) : true
+        })
+      })
+    }
+    case 'env_sync_connector': {
+      const { encodedEnvId } = resolveEnvId()
+      const connectionId = String(args.connection_id ?? args.connectionId ?? '').trim()
+      if (!connectionId) throw new Error('connection_id is required')
+      return envFetch(`${envPrefix}/${encodedEnvId}/connectors/sync`, {
+        method: 'POST',
+        body: JSON.stringify({
+          connection_id: safeId(connectionId, 'connection_id'),
+          limit: Number(args.limit ?? 50)
+        })
       })
     }
     case 'env_record_outcome': {
