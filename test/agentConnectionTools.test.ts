@@ -92,9 +92,10 @@ describe('agent-key sessions (hb_conn_*)', () => {
 })
 
 describe('bootstrap sessions (no auth)', () => {
-  it('exposes create_account only', () => {
-    assert.equal(bootstrapToolDefinitions.length, 1)
+  it('exposes create_account and hebrah_concierge_chat only', () => {
+    assert.equal(bootstrapToolDefinitions.length, 2)
     assert.equal(bootstrapToolDefinitions[0].name, 'create_account')
+    assert.equal(bootstrapToolDefinitions[1].name, 'hebrah_concierge_chat')
   })
 
   it('create_account calls the agent API with headless signup', async () => {

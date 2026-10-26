@@ -419,6 +419,29 @@ export function listToolInputSchema(toolName: string) {
           session_id: { type: 'string' as const, description: 'Optional Studio session ID to continue a multi-turn exploration thread' }
         }
       }
+    case 'hebrah_concierge_chat':
+      return {
+        type: 'object' as const,
+        required: ['message'],
+        properties: {
+          message: { type: 'string' as const, description: 'Natural-language message for the Hosted Personal Concierge (Stage 1 onboarding, blueprint design, account/environment creation, and Hebrah Q&A) or Personal Account & Environment Studio Agent (Stage 2 clinical exploration, scenarios, outcomes, SDK snippets, and account management)' },
+          session_id: { type: 'string' as const, description: 'Optional Concierge or Studio session ID to continue a conversation' },
+          session_token: { type: 'string' as const, description: 'Optional pre-auth onboarding session token (hb_onb_...)' },
+          environment_id: { type: 'string' as const, description: 'Optional Environment ID to focus Stage 2 Studio on (defaults to active session environment)' },
+          org_name: { type: 'string' as const, description: 'Optional organization name when creating a new headless agent account during onboarding' },
+          invite_email: { type: 'string' as const, description: 'Optional human teammate/owner email to send a claim/adoption invitation to' },
+          auto_provision: { type: 'boolean' as const, description: 'Set true to immediately create the account and provision the recommended clinical environment' }
+        }
+      }
+    case 'env_invite_human':
+      return {
+        type: 'object' as const,
+        required: ['invite_email'],
+        properties: {
+          invite_email: { type: 'string' as const, description: 'Email address of the human teammate or organization owner to invite' },
+          org_name: { type: 'string' as const, description: 'Optional organization display name' }
+        }
+      }
     case 'env_search_clinical_evidence':
       return {
         type: 'object' as const,

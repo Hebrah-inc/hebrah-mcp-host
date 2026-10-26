@@ -140,6 +140,7 @@ function recordIpAuthFailure(ip: string, now = Date.now()): void {
 
 const ONE_TIME_SECRET_TOOLS = new Set([
   'create_account',
+  'hebrah_concierge_chat',
   'create_sandbox_api_key',
   'rotate_connection_webhook_secret'
 ])

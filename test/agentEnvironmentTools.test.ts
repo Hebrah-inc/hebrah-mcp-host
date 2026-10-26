@@ -242,6 +242,21 @@ describe('agent environment tools (hb_conn_*)', () => {
     const admitBody = JSON.parse(String(calls[1].init?.body))
     assert.equal(admitBody.count, 6)
     assert.deepEqual(admitBody.departments, ['Critical Care / ICU'])
+
+    await callTool(agentAuth, 'sess-arch-1', 'hebrah_concierge_chat', {
+      message: 'What datasets and capability packs are available in Hebrah?'
+    })
+    assert.equal(calls.length, 3)
+    assert.ok(calls[2].url.endsWith('/v1/concierge/chat'))
+    assert.equal(calls[2].init?.method, 'POST')
+
+    await callTool(agentAuth, 'sess-arch-1', 'env_invite_human', {
+      invite_email: 'founder@clinic-lab.org',
+      org_name: 'Clinic Lab'
+    })
+    assert.equal(calls.length, 4)
+    assert.ok(calls[3].url.endsWith('/v1/agent/invite-human'))
+    assert.equal(calls[3].init?.method, 'POST')
   })
 })
 

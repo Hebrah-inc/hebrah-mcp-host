@@ -40,6 +40,8 @@ const sessions = new Map<string, {
   connectAccountId?: string
   connectConnectionId?: string
   activeEnvironmentId?: string
+  conciergeSessionId?: string
+  conciergeSessionToken?: string
 }>()
 
 export function getSession(sessionId: string) {
@@ -147,11 +149,11 @@ export function assertSafeSidecarUrl(rawUrl: string): string {
 }
 
 const SECRET_PATTERNS: Array<[RegExp, string]> = [
-  [/\bhb_(?:live|test|pat|conn|claim)_[A-Za-z0-9_-]+/g, 'hb_[REDACTED]'],
+  [/\bhb_(?:live|test|pat|conn|claim|onb)_[A-Za-z0-9_-]+/g, 'hb_[REDACTED]'],
   [/\bhbsec_[A-Za-z0-9_-]+/g, 'hbsec_[REDACTED]'],
   [/\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]+/g, 'sk_[REDACTED]'],
   [/\bwhsec_[A-Za-z0-9]+/g, 'whsec_[REDACTED]'],
-  [/\benc:v1:[A-Za-z0-9+/=_:-]+/g, 'enc:v1:[REDACTED]'],
+  [/\b(enc:v(?:1|2):)[A-Za-z0-9+/=_:-]+/g, '$1[REDACTED]'],
   [/(Authorization\s*:\s*Bearer\s+)[^\s"',;]+/gi, '$1[REDACTED]'],
   [/(Bearer\s+)(?:hb_[A-Za-z0-9_-]+|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)/gi, '$1[REDACTED]'],
   [/(PrivateKey\s*=\s*)[^\s\r\n]+/gi, '$1[REDACTED]']
@@ -295,6 +297,8 @@ export const AGENT_TOOL_NAMES = [
   'env_resume',
   'env_consult_studio',
   'env_search_clinical_evidence',
+  'hebrah_concierge_chat',
+  'env_invite_human',
   'get_sdk_reference'
 ] as const
 
@@ -434,6 +438,16 @@ export const agentToolDefinitions = [
     inputSchema: listToolInputSchema('env_search_clinical_evidence')
   },
   {
+    name: 'hebrah_concierge_chat',
+    description: 'Chat with the Hosted Personal Concierge (Stage 1 onboarding, blueprint design, account/environment creation, and Hebrah Q&A) or Personal Account & Environment Studio Agent (Stage 2 clinical exploration, scenarios, outcomes, SDK snippets, and account management)',
+    inputSchema: listToolInputSchema('hebrah_concierge_chat')
+  },
+  {
+    name: 'env_invite_human',
+    description: 'Invite a human teammate or organization owner by email and generate a claim/adoption URL (/claim-org/[token]) so a human can claim this agent or adopt it into an existing organization',
+    inputSchema: listToolInputSchema('env_invite_human')
+  },
+  {
     name: 'get_sdk_reference',
     description: 'Official @hebrah/sdk & hebrah Python SDK guide (v0.9.2): install, env vars, methods, webhook verification, and MCP→SDK mapping',
     inputSchema: listToolInputSchema('get_sdk_reference')
@@ -487,7 +501,8 @@ async function dashboardFetch<T>(pat: string, path: string, init?: RequestInit):
 }
 
 export const bootstrapToolDefinitions = [
-  { name: 'create_account', description: 'Create a Hebrah agent account headlessly — $5.00 free credit, 1,000 queries, 50 MB egress, 14 days, no card. Available only when ALLOW_HEADLESS_SIGNUP=true' }
+  { name: 'create_account', description: 'Create a Hebrah agent account headlessly — $5.00 free credit, 1,000 queries, 50 MB egress, 14 days, no card. Available only when ALLOW_HEADLESS_SIGNUP=true' },
+  { name: 'hebrah_concierge_chat', description: 'Interactive Hosted Personal Concierge — answers questions about Hebrah features/data, recommends clinical blueprints, and provisions your account ($5.00 free credit) + environment in conversation' }
 ]
 
 export const toolDefinitions = [
@@ -573,7 +588,9 @@ export const toolDefinitions = [
   { name: 'env_pause', description: 'Pause an environment to suspend compute and reduce hourly rate to $0.00/hr' },
   { name: 'env_resume', description: 'Resume a paused environment and restore compute services' },
   { name: 'env_consult_studio', description: 'Consult the Per-Environment Isolated GCP AI Studio to explore synthetic cohorts, open-data clinical vignettes/guidelines/calculators/PrimeKG pathways, or execute read-only SQL/FHIR/DICOM/CDS checks (strictly locked to the environment; external skill/tool installation requests are blocked)' },
-  { name: 'env_search_clinical_evidence', description: 'Search the Open-Data Clinical Knowledge & Evidence Enrichment Pack (clinical_knowledge_v1 + dicom_imaging_v1: vignettes, clinical guidelines, PrimeKG biomedical graph pathways, calculators, and de-identified DICOM exemplars)' }
+  { name: 'env_search_clinical_evidence', description: 'Search the Open-Data Clinical Knowledge & Evidence Enrichment Pack (clinical_knowledge_v1 + dicom_imaging_v1: vignettes, clinical guidelines, PrimeKG biomedical graph pathways, calculators, and de-identified DICOM exemplars)' },
+  { name: 'hebrah_concierge_chat', description: 'Chat with the Hosted Personal Concierge (Stage 1 onboarding, blueprint design, account/environment creation, and Hebrah Q&A) or Personal Account & Environment Studio Agent (Stage 2 clinical exploration, scenarios, outcomes, SDK snippets, and account management)' },
+  { name: 'env_invite_human', description: 'Invite a human teammate or organization owner by email and generate a claim/adoption URL (/claim-org/[token])' }
 ]
 
 export function filterClinicalEvidenceCatalog(
@@ -883,6 +900,85 @@ async function executeEnvironmentTool(
       }
       return filterClinicalEvidenceCatalog(catalog, query, subpack, specialty)
     }
+    case 'env_invite_human': {
+      const inviteEmail = String(args.invite_email ?? args.inviteEmail ?? '').trim()
+      if (!inviteEmail || !inviteEmail.includes('@')) {
+        throw new Error('invite_email must be a valid email address')
+      }
+      const body: Record<string, unknown> = { invite_email: inviteEmail }
+      if (args.org_name ?? args.orgName) {
+        body.org_name = String(args.org_name ?? args.orgName).trim()
+      }
+      return auth.mode === 'agent'
+        ? agentApiFetch(auth, '/v1/agent/invite-human', { method: 'POST', body: JSON.stringify(body) })
+        : ultraFetch(auth.orgId, '/v1/agent/invite-human', { method: 'POST', body: JSON.stringify(body) })
+    }
+    case 'hebrah_concierge_chat': {
+      const message = String(args.message ?? '').trim()
+      if (!message) throw new Error('message is required for hebrah_concierge_chat')
+      const body: Record<string, unknown> = {
+        message,
+        channel: 'agent_mcp',
+        auto_provision: Boolean(args.auto_provision ?? args.autoProvision)
+      }
+      const rawSessionId = String(args.session_id ?? args.sessionId ?? session.conciergeSessionId ?? '').trim()
+      if (rawSessionId) {
+        body.session_id = safeId(rawSessionId, 'session_id')
+      }
+      const rawSessionToken = String(args.session_token ?? args.sessionToken ?? session.conciergeSessionToken ?? '').trim()
+      if (rawSessionToken) {
+        body.session_token = rawSessionToken
+      }
+      const rawEnvId = String(args.environment_id ?? args.environmentId ?? session.activeEnvironmentId ?? '').trim()
+      if (rawEnvId) {
+        body.environment_id = safeId(rawEnvId, 'environment_id')
+      }
+      if (args.org_name ?? args.orgName) {
+        body.org_name = String(args.org_name ?? args.orgName).trim()
+      }
+      if (args.invite_email ?? args.inviteEmail) {
+        body.invite_email = String(args.invite_email ?? args.inviteEmail).trim()
+      }
+      let result: {
+        session_id?: string
+        session_token?: string | null
+        active_environment_id?: string | null
+        provisioned_environment?: { id?: string } | null
+      }
+      if (auth.bootstrap) {
+        const res = await fetch(`${config.hebrahApiUrl}/v1/concierge/chat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(30_000)
+        })
+        if (!res.ok) {
+          throw new Error(redactSecrets(`Concierge chat failed (${res.status}): ${await res.text()}`))
+        }
+        result = await res.json() as typeof result
+      } else if (auth.mode === 'agent') {
+        result = await agentApiFetch<typeof result>(auth, '/v1/concierge/chat', {
+          method: 'POST',
+          body: JSON.stringify(body)
+        })
+      } else {
+        result = await ultraFetch<typeof result>(auth.orgId, '/v1/concierge/chat', {
+          method: 'POST',
+          body: JSON.stringify(body)
+        })
+      }
+      if (result?.session_id) {
+        session.conciergeSessionId = result.session_id
+      }
+      if (result?.session_token) {
+        session.conciergeSessionToken = result.session_token
+      }
+      const newEnvId = result?.provisioned_environment?.id ?? result?.active_environment_id
+      if (newEnvId) {
+        session.activeEnvironmentId = newEnvId
+      }
+      return result
+    }
     default:
       throw new Error(`Unknown environment tool: ${name}`)
   }
@@ -896,6 +992,10 @@ export async function callTool(
 ): Promise<unknown> {
   if (!auth.bootstrap) await checkRateLimit(auth.orgId, name)
   const session = getSession(sessionId)
+
+  if (name === 'hebrah_concierge_chat') {
+    return executeEnvironmentTool(auth, session, name, args)
+  }
 
   // Agent-key (hb_conn_* / hb_live_* / hb_test_*) sessions: the connection and
   // isolated environment surfaces. Forward the agent key to hebrah-api — scopes,
