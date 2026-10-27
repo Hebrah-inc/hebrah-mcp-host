@@ -482,6 +482,136 @@ app.get('/robots.txt', c => c.text('User-agent: *\nDisallow: /\n'))
 
 app.get('/health', c => c.json({ ok: true }))
 
+function resolvePublicMcpBaseUrl(hostHeader: string | undefined): {
+  siteUrl: string
+  mcpBaseUrl: string
+  apiUrl: string
+  dashboardUrl: string
+} {
+  const isProd = config.dashboardUrl.includes('app.hebrah.com') || (hostHeader ?? '').includes('mcp.hebrah.com')
+  const isStaging = config.dashboardUrl.includes('hebrah-staging-') || (hostHeader ?? '').includes('hebrah-staging-')
+  const siteUrl = isProd
+    ? 'https://hebrah.com'
+    : isStaging
+      ? 'https://hebrah-staging-www-76zyj6ngda-uc.a.run.app'
+      : 'http://localhost:3020'
+  const mcpBaseUrl = isProd
+    ? 'https://mcp.hebrah.com'
+    : isStaging
+      ? 'https://hebrah-staging-mcp-76zyj6ngda-uc.a.run.app'
+      : `http://${hostHeader || `localhost:${config.port}`}`
+  const apiUrl = isProd
+    ? 'https://api.hebrah.com'
+    : isStaging
+      ? 'https://hebrah-staging-api-76zyj6ngda-uc.a.run.app'
+      : config.hebrahApiUrl
+  return {
+    siteUrl,
+    mcpBaseUrl,
+    apiUrl,
+    dashboardUrl: config.dashboardUrl
+  }
+}
+
+function buildHostedMcpServerCard(hostHeader: string | undefined) {
+  const { siteUrl, mcpBaseUrl, apiUrl, dashboardUrl } = resolvePublicMcpBaseUrl(hostHeader)
+  const mcpEndpoint = `${mcpBaseUrl}/mcp`
+
+  return {
+    $schema: 'https://static.modelcontextprotocol.io/schemas/v1/server-card.schema.json',
+    name: 'com.hebrah.mcp',
+    title: 'Hebrah Isolated Health Environments & Clinical Connectivity MCP',
+    description:
+      'Official Streamable HTTP Model Context Protocol (MCP) server for Hebrah. Provision and query Isolated Health Environments across 16 clinical archetypes, consult the Conversational Environment Architect, run credential-blind SQL/Cypher/Vector/FHIR queries, trigger HL7 v2 clinical scenarios, and verify SHA-256 tamper-evident audit chains.',
+    version: '0.4.8',
+    protocolVersion: '2025-06-18',
+    serverInfo: {
+      name: 'com.hebrah.mcp',
+      title: 'Hebrah Isolated Health Environments & Clinical Connectivity MCP',
+      version: '0.4.8'
+    },
+    vendor: {
+      name: 'Hebrah Inc.',
+      url: siteUrl
+    },
+    homepageUrl: `${siteUrl}/developers/mcp`,
+    documentationUrl: `${siteUrl}/SKILL.md`,
+    instructions: MCP_SERVER_INSTRUCTIONS,
+    remotes: [
+      {
+        type: 'streamable-http',
+        url: mcpEndpoint,
+        headers: [
+          {
+            name: 'Authorization',
+            description: 'Bearer token (hb_pat_*, hb_live_*, hb_test_*, or hb_conn_*)',
+            isRequired: false,
+            isSecret: true
+          }
+        ]
+      }
+    ],
+    endpoints: {
+      mcp: mcpEndpoint,
+      health: `${mcpBaseUrl}/health`,
+      register: `${apiUrl}/v1/agent/register`
+    },
+    transport: {
+      type: 'streamable-http',
+      endpoint: mcpEndpoint
+    },
+    authentication: {
+      type: 'bearer',
+      schemes: ['Bearer'],
+      tokenPrefixes: ['hb_pat_', 'hb_live_', 'hb_test_', 'hb_conn_'],
+      registrationEndpoint: `${apiUrl}/v1/agent/register`,
+      instructionsUrl: `${siteUrl}/auth.md`,
+      bootstrapWithoutTokenSupported: Boolean(config.allowHeadlessSignup)
+    },
+    capabilities: {
+      tools: {
+        listChanged: false
+      },
+      resources: {
+        subscribe: false,
+        listChanged: false
+      },
+      prompts: {
+        listChanged: false
+      }
+    },
+    tools: agentToolDefinitions.slice(0, 16).map(t => ({
+      name: t.name,
+      description: t.description
+    })),
+    links: {
+      authGuide: `${siteUrl}/auth.md`,
+      skillMd: `${siteUrl}/SKILL.md`,
+      agentCard: `${siteUrl}/.well-known/agent-card.json`,
+      dashboard: dashboardUrl
+    }
+  }
+}
+
+app.options('/.well-known/*', (c) => {
+  c.header('Access-Control-Allow-Origin', '*')
+  c.header('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS')
+  c.header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+  return c.body(null, 204)
+})
+
+app.get('/.well-known/mcp/server-card.json', (c) => {
+  c.header('Access-Control-Allow-Origin', '*')
+  c.header('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS')
+  return c.json(buildHostedMcpServerCard(c.req.header('host')))
+})
+
+app.get('/.well-known/mcp.json', (c) => {
+  c.header('Access-Control-Allow-Origin', '*')
+  c.header('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS')
+  return c.json(buildHostedMcpServerCard(c.req.header('host')))
+})
+
 app.all('/mcp', async (c) => {
   const clientIp = extractClientIp(c.req.header('x-forwarded-for'), c.req.header('cf-connecting-ip'))
   const lockout = checkIpAuthLockout(clientIp)
