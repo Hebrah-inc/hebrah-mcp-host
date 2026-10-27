@@ -66,7 +66,7 @@ function isTrustedProxyIp(ip: string): boolean {
 }
 
 function extractClientIp(xffHeader: string | undefined, cfIpHeader: string | undefined): string {
-  if (cfIpHeader && cfIpHeader.trim()) {
+  if (process.env.TRUST_CLOUDFLARE === 'true' && cfIpHeader && cfIpHeader.trim()) {
     return cfIpHeader.trim().slice(0, 64)
   }
   if (xffHeader) {
