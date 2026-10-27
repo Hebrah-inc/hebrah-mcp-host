@@ -22,6 +22,7 @@ import {
   agentToolDefinitions,
   AGENT_TOOL_NAMES,
   redactSecrets,
+  validateAgentKey,
   validatePat,
   type McpAuth
 } from './tools.js'
@@ -518,10 +519,15 @@ app.all('/mcp', async (c) => {
 
   let auth: McpAuth
   if (bearer?.kind === 'agent') {
-    // Agent-key session (hb_conn_* / hb_live_* / hb_test_*): the key is validated
-    // by hebrah-api on every call — no dashboard lookup needed. The hashed key
-    // acts as the session-org discriminator.
     const agent = bearer.token
+    if (!existingSession || existingSession.auth.agentKey !== agent) {
+      const validAgentKey = await validateAgentKey(agent)
+      if (!validAgentKey) {
+        recordIpAuthFailure(clientIp)
+        console.warn('[mcp] rejected: invalid or expired agent key')
+        return c.json({ error: 'Invalid or expired token' }, 401)
+      }
+    }
     auth = {
       mode: 'agent',
       pat: '',

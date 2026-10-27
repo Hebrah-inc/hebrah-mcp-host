@@ -2185,6 +2185,35 @@ export async function callTool(
 }
 
 const PAT_VALIDATE_TIMEOUT_MS = 10_000
+const AGENT_KEY_VALIDATE_CACHE_TTL_MS = 60_000
+const validatedAgentKeyCache = new Map<string, number>()
+
+export async function validateAgentKey(agentKey: string): Promise<boolean> {
+  const now = Date.now()
+  const cachedUntil = validatedAgentKeyCache.get(agentKey)
+  if (cachedUntil && cachedUntil > now) {
+    return true
+  }
+  try {
+    const res = await fetch(`${config.hebrahApiUrl}/v1/environments`, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${agentKey}`
+      },
+      signal: AbortSignal.timeout(PAT_VALIDATE_TIMEOUT_MS)
+    })
+    if (res.status === 401 || res.status === 403) {
+      validatedAgentKeyCache.delete(agentKey)
+      return false
+    }
+    if (res.ok) {
+      validatedAgentKeyCache.set(agentKey, now + AGENT_KEY_VALIDATE_CACHE_TTL_MS)
+    }
+    return true
+  } catch {
+    return true
+  }
+}
 
 export async function validatePat(pat: string) {
   let res: Response
