@@ -259,7 +259,8 @@ const MCP_SERVER_INSTRUCTIONS = [
   'For private enterprise data connectors, use discover_data_sources → confirm_action → connect_to_data_source → query_data_source; connections are scoped, read-only, TTL-bound, and auditable.',
   'For application integration code, use the official Node SDK @hebrah/sdk (npm install @hebrah/sdk).',
   'Call get_sdk_reference for full SDK docs, API surface, and MCP-to-SDK mapping — do not web-search npm.',
-  'Agents authenticate with hb_conn_*, hb_live_*, or hb_test_* keys (from POST /v1/agent/account, hebrah login, or create_account); dashboard integrators use hb_pat_* tokens.'
+  'Both agent keys (hb_conn_*, hb_live_*, hb_test_* from hebrah login, hebrah signup, or POST /v1/concierge/chat) and dashboard personal access tokens (hb_pat_* from Settings → MCP) are accepted in the Authorization: Bearer <token> header across Claude Code, Cursor, VS Code, Windsurf, and Google Antigravity.',
+  'To configure MCP at user scope without exposing tokens in chat transcripts, run `hebrah mcp install` or `claude mcp add -s user --transport http hebrah https://mcp.hebrah.com/mcp --header "Authorization: Bearer $(jq -r .apiKey ~/.hebrah/credentials)"`.'
 ].join(' ')
 
 function createMcpServer(auth: McpAuth, sessionId: string) {
@@ -566,7 +567,12 @@ function buildHostedMcpServerCard(hostHeader: string | undefined) {
       tokenPrefixes: ['hb_pat_', 'hb_live_', 'hb_test_', 'hb_conn_'],
       registrationEndpoint: `${apiUrl}/v1/agent/register`,
       instructionsUrl: `${siteUrl}/auth.md`,
-      bootstrapWithoutTokenSupported: Boolean(config.allowHeadlessSignup)
+      bootstrapWithoutTokenSupported: Boolean(config.allowHeadlessSignup),
+      setupCommands: {
+        cli: 'hebrah mcp install',
+        claudeCode: `claude mcp add -s user --transport http hebrah ${mcpEndpoint} --header "Authorization: Bearer $(jq -r .apiKey ~/.hebrah/credentials)"`,
+        claudeCodeWithToken: `claude mcp add -s user --transport http hebrah ${mcpEndpoint} --header "Authorization: Bearer <hb_conn_OR_hb_pat_TOKEN>"`
+      }
     },
     capabilities: {
       tools: {
@@ -593,6 +599,27 @@ function buildHostedMcpServerCard(hostHeader: string | undefined) {
   }
 }
 
+const MCP_BEARER_WWW_AUTHENTICATE =
+  'Bearer realm="hebrah-mcp", error="invalid_token", error_description="Bearer token required (hb_conn_*, hb_pat_*, hb_live_*, or hb_test_*). Run: hebrah mcp install OR claude mcp add -s user --transport http hebrah https://mcp.hebrah.com/mcp --header \\"Authorization: Bearer <TOKEN>\\""'
+
+function buildMissingBearerMessage(hostHeader: string | undefined) {
+  const { mcpBaseUrl, dashboardUrl } = resolvePublicMcpBaseUrl(hostHeader)
+  const mcpEndpoint = `${mcpBaseUrl}/mcp`
+  return {
+    error: 'invalid_token',
+    error_description:
+      `Missing Authorization: Bearer token. Pass an agent key (hb_conn_*, hb_live_*, hb_test_* from \`hebrah login\` or \`hebrah signup\`) or a dashboard token (hb_pat_* from ${dashboardUrl}/settings/mcp). ` +
+      `For Claude Code (user scope across all folders), run: claude mcp add -s user --transport http hebrah ${mcpEndpoint} --header "Authorization: Bearer $(jq -r .apiKey ~/.hebrah/credentials)" (or run \`hebrah mcp install\`).`,
+    message:
+      'Missing Bearer token (use hb_conn_*, hb_live_*, or hb_test_* from hebrah login / agent signup, or hb_pat_* from Dashboard Settings → MCP).',
+    setup: {
+      cli: 'hebrah mcp install',
+      claudeCode: `claude mcp add -s user --transport http hebrah ${mcpEndpoint} --header "Authorization: Bearer $(jq -r .apiKey ~/.hebrah/credentials)"`,
+      claudeCodeWithToken: `claude mcp add -s user --transport http hebrah ${mcpEndpoint} --header "Authorization: Bearer <hb_conn_OR_hb_pat_TOKEN>"`
+    }
+  }
+}
+
 app.options('/.well-known/*', (c) => {
   c.header('Access-Control-Allow-Origin', '*')
   c.header('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS')
@@ -611,6 +638,23 @@ app.get('/.well-known/mcp.json', (c) => {
   c.header('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS')
   return c.json(buildHostedMcpServerCard(c.req.header('host')))
 })
+
+// MCP clients (e.g. Claude Code) automatically probe OAuth 2.1 discovery and RFC 7591
+// Dynamic Client Registration (/register) when an HTTP MCP server is added without an
+// Authorization header. Returning 401 with an explicit Bearer token setup hint instead
+// of a generic 404 prevents the misleading "Dynamic Client Registration rejected (HTTP 404)" error.
+for (const oauthProbePath of [
+  '/.well-known/oauth-authorization-server',
+  '/.well-known/oauth-protected-resource',
+  '/.well-known/openid-configuration',
+  '/register',
+  '/oauth/register'
+]) {
+  app.all(oauthProbePath, (c) => {
+    c.header('WWW-Authenticate', MCP_BEARER_WWW_AUTHENTICATE)
+    return c.json(buildMissingBearerMessage(c.req.header('host')), 401)
+  })
+}
 
 app.all('/mcp', async (c) => {
   const clientIp = extractClientIp(c.req.header('x-forwarded-for'), c.req.header('cf-connecting-ip'))
@@ -644,6 +688,7 @@ app.all('/mcp', async (c) => {
   if (rawAuthHeader && rawAuthHeader.trim().length > 0 && !bearer) {
     recordIpAuthFailure(clientIp)
     console.warn('[mcp] rejected: malformed Authorization header')
+    c.header('WWW-Authenticate', MCP_BEARER_WWW_AUTHENTICATE)
     return c.json({ error: 'Invalid or expired token' }, 401)
   }
 
@@ -655,6 +700,7 @@ app.all('/mcp', async (c) => {
       if (!validAgentKey) {
         recordIpAuthFailure(clientIp)
         console.warn('[mcp] rejected: invalid or expired agent key')
+        c.header('WWW-Authenticate', MCP_BEARER_WWW_AUTHENTICATE)
         return c.json({ error: 'Invalid or expired token' }, 401)
       }
     }
@@ -678,6 +724,7 @@ app.all('/mcp', async (c) => {
     if (!validated) {
       recordIpAuthFailure(clientIp)
       console.warn('[mcp] rejected: invalid or expired PAT')
+      c.header('WWW-Authenticate', MCP_BEARER_WWW_AUTHENTICATE)
       return c.json({ error: 'Invalid or expired token' }, 401)
     }
     auth = {
@@ -702,10 +749,11 @@ app.all('/mcp', async (c) => {
       bootstrap: true
     }
   } else {
-    // Do not penalize missing-header probes from MCP clients (Cursor, Claude Desktop)
+    // Do not penalize missing-header probes from MCP clients (Cursor, Claude Desktop, Claude Code)
     // during capability negotiation — only explicit invalid credentials count toward lockout.
     console.warn('[mcp] rejected: missing Bearer hb_pat_* / hb_conn_* / hb_live_* / hb_test_* token')
-    return c.json({ error: 'Missing Bearer token (hb_pat_* for dashboard sessions, hb_conn_*/hb_live_*/hb_test_* for agent sessions)' }, 401)
+    c.header('WWW-Authenticate', MCP_BEARER_WWW_AUTHENTICATE)
+    return c.json(buildMissingBearerMessage(c.req.header('host')), 401)
   }
 
   const requestSessionId = c.req.header('mcp-session-id') ?? undefined
