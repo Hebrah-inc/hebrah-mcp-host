@@ -298,6 +298,7 @@ export const AGENT_TOOL_NAMES = [
   'env_trigger_scenario',
   'env_list_patients',
   'env_get_patient_chart',
+  'env_compare_ecgs',
   'env_get_logs',
   'env_pause',
   'env_resume',
@@ -445,8 +446,13 @@ export const agentToolDefinitions = [
   },
   {
     name: 'env_get_patient_chart',
-    description: 'Retrieve a complete synthetic patient chart (demographics, conditions, medications, vitals, lab results, encounters, imaging studies, genomics, SDOH, external C-CDA documents)',
+    description: 'Retrieve a complete synthetic patient chart (demographics, conditions, medications, vitals, lab results, encounters, imaging studies, 12-lead PTB-XL ECG studies, genomics, SDOH, external C-CDA documents)',
     inputSchema: listToolInputSchema('env_get_patient_chart')
+  },
+  {
+    name: 'env_compare_ecgs',
+    description: 'Compare two 12-lead PTB-XL ECG studies in an environment (lead-by-lead amplitude/RMS delta analysis and clinical summary)',
+    inputSchema: listToolInputSchema('env_compare_ecgs')
   },
   {
     name: 'env_get_logs',
@@ -625,7 +631,8 @@ export const toolDefinitions = [
   { name: 'env_record_outcome', description: 'Persist a structured clinical finding or outcome into the environment app_outcomes table (protected by inbound DLP filter)' },
   { name: 'env_trigger_scenario', description: 'Trigger a synthetic clinical workflow scenario with live HL7 WebSocket alerts' },
   { name: 'env_list_patients', description: 'List synthetic patients in the environment EHR with multi-facet filtering by department, diagnosis pathway, treatment modality, or acuity' },
-  { name: 'env_get_patient_chart', description: 'Retrieve a complete synthetic patient chart' },
+  { name: 'env_get_patient_chart', description: 'Retrieve a complete synthetic patient chart (including 12-lead PTB-XL ECG studies)' },
+  { name: 'env_compare_ecgs', description: 'Compare two 12-lead PTB-XL ECG studies in an environment (lead-by-lead amplitude/RMS delta analysis)' },
   { name: 'env_get_logs', description: 'Retrieve tamper-evident activity and audit logs for the isolated health environment' },
   { name: 'env_pause', description: 'Pause an environment to suspend compute and reduce hourly rate to $0.00/hr' },
   { name: 'env_resume', description: 'Resume a paused environment and restore compute services' },
@@ -776,9 +783,28 @@ async function executeEnvironmentTool(
       if (Array.isArray(args.diagnosis_pathways ?? args.diagnosisPathways)) body.diagnosis_pathways = args.diagnosis_pathways ?? args.diagnosisPathways
       if (Array.isArray(args.treatment_modalities ?? args.treatmentModalities)) body.treatment_modalities = args.treatment_modalities ?? args.treatmentModalities
       if (Array.isArray(args.acuity_levels ?? args.acuityLevels)) body.acuity_levels = args.acuity_levels ?? args.acuityLevels
+      if (args.specialty_pack_id ?? args.specialtyPackId) body.specialty_pack_id = String(args.specialty_pack_id ?? args.specialtyPackId)
+      if (Array.isArray(args.condition_ids ?? args.conditionIds)) body.condition_ids = args.condition_ids ?? args.conditionIds
+      if (args.depth) body.depth = String(args.depth)
+      if (args.branch_id ?? args.branchId) body.branch_id = String(args.branch_id ?? args.branchId)
       return envFetch(`${envPrefix}/${encodedEnvId}/ehr/patients/generate`, {
         method: 'POST',
         body: JSON.stringify(body)
+      })
+    }
+    case 'env_compare_ecgs': {
+      const { encodedEnvId } = resolveEnvId()
+      const leftEcgId = String(args.left_ecg_id ?? args.leftEcgId ?? '').trim()
+      const rightEcgId = String(args.right_ecg_id ?? args.rightEcgId ?? '').trim()
+      if (!leftEcgId || !rightEcgId) {
+        throw new Error('left_ecg_id and right_ecg_id are required for env_compare_ecgs')
+      }
+      return envFetch(`${envPrefix}/${encodedEnvId}/ecg/compare`, {
+        method: 'POST',
+        body: JSON.stringify({
+          left_ecg_id: leftEcgId,
+          right_ecg_id: rightEcgId
+        })
       })
     }
     case 'env_connect': {
@@ -1959,11 +1985,21 @@ export async function callTool(
       }
     }
     case 'attach_ptbxl_ecg_exemplar': {
+      const envId = args.environment_id ?? args.environmentId ?? session.activeEnvironmentId
       const connectionId = args.connection_id ?? args.connectionId ?? session.activeConnectionId
       const patientId = args.patient_id ?? args.patientId
       const ecgId = args.ecg_id ?? args.ecgId
       if (!patientId || ecgId == null) {
         throw new Error('patient_id and ecg_id required for attach_ptbxl_ecg_exemplar')
+      }
+      if (envId) {
+        return ultraFetch(auth.orgId, `/v1/environments/${safeId(String(envId), 'environment_id')}/ecg/studies`, {
+          method: 'POST',
+          body: JSON.stringify({
+            patient_id: safeId(String(patientId), 'patient_id'),
+            ecg_id: String(ecgId)
+          })
+        })
       }
       const q = connectionId ? `?connection_id=${encodeURIComponent(String(connectionId))}` : ''
       return ultraFetch(auth.orgId, `/v1/sandbox/research-packs/ptbxl_ecg_v1/attach${q}`, {

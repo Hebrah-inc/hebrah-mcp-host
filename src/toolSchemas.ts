@@ -216,6 +216,7 @@ export function listToolInputSchema(toolName: string) {
         type: 'object' as const,
         required: ['patient_id', 'ecg_id'],
         properties: {
+          environment_id: { type: 'string' as const, description: 'Target isolated environment ID (preferred over legacy connectionId)' },
           connectionId: { type: 'string' as const },
           patient_id: { type: 'string' as const },
           ecg_id: { type: 'string' as const }
@@ -310,7 +311,21 @@ export function listToolInputSchema(toolName: string) {
           departments: { type: 'array' as const, items: { type: 'string' as const }, description: 'Hospital departments' },
           diagnosis_pathways: { type: 'array' as const, items: { type: 'string' as const }, description: 'Specific clinical archetype IDs' },
           treatment_modalities: { type: 'array' as const, items: { type: 'string' as const }, description: 'Treatment modalities' },
-          acuity_levels: { type: 'array' as const, items: { type: 'string' as const }, description: 'Acuity levels (routine, urgent, emergent, critical)' }
+          acuity_levels: { type: 'array' as const, items: { type: 'string' as const }, description: 'Acuity levels (routine, urgent, emergent, critical)' },
+          specialty_pack_id: { type: 'string' as const, description: 'Optional specialty condition pack ID (e.g. cardiology, neurology, oncology, nephrology, geriatric_polypharmacy)' },
+          condition_ids: { type: 'array' as const, items: { type: 'string' as const }, description: 'Optional specific condition IDs from the specialty pack' },
+          depth: { type: 'string' as const, enum: ['standard', 'rich'] as const, description: 'Longitudinal clinical depth (rich seeds multi-visit encounters & serial CKD eGFR/Creatinine trajectories)' },
+          branch_id: { type: 'string' as const, description: 'Optional cohort branch ID for A/B cohort comparison' }
+        }
+      }
+    case 'env_compare_ecgs':
+      return {
+        type: 'object' as const,
+        required: ['left_ecg_id', 'right_ecg_id'],
+        properties: {
+          environment_id: { type: 'string' as const, description: 'Environment ID (defaults to active session environment)' },
+          left_ecg_id: { type: 'string' as const, description: 'Left PTB-XL ECG ID or environment ECG study ID' },
+          right_ecg_id: { type: 'string' as const, description: 'Right PTB-XL ECG ID or environment ECG study ID' }
         }
       }
     case 'env_connect':

@@ -309,10 +309,34 @@ describe('PAT environment tools (hb_pat_*)', () => {
 
     await callTool(patAuth, 'sess-pat-2', 'env_admit_patients', {
       count: 4,
-      departments: ['Oncology & Infusion']
+      departments: ['Oncology & Infusion'],
+      specialty_pack_id: 'cardiology',
+      condition_ids: ['cad', 'hf'],
+      depth: 'rich',
+      branch_id: 'branch-1'
     })
     assert.ok(calls[6].url.endsWith('/api/environments/env-lab-1/ehr/patients/generate'))
     assert.equal(calls[6].init?.method, 'POST')
+    const patAdmitBody = JSON.parse(String(calls[6].init?.body))
+    assert.equal(patAdmitBody.specialty_pack_id, 'cardiology')
+    assert.deepEqual(patAdmitBody.condition_ids, ['cad', 'hf'])
+    assert.equal(patAdmitBody.depth, 'rich')
+    assert.equal(patAdmitBody.branch_id, 'branch-1')
+
+    await callTool(patAuth, 'sess-pat-2', 'env_compare_ecgs', {
+      left_ecg_id: '10002',
+      right_ecg_id: '10001'
+    })
+    assert.ok(calls[7].url.endsWith('/api/environments/env-lab-1/ecg/compare'))
+    assert.equal(calls[7].init?.method, 'POST')
+
+    await callTool(patAuth, 'sess-pat-2', 'attach_ptbxl_ecg_exemplar', {
+      environment_id: 'env-lab-1',
+      patient_id: 'pat-1',
+      ecg_id: '10002'
+    })
+    assert.ok(calls[8].url.endsWith('/v1/environments/env-lab-1/ecg/studies'))
+    assert.equal(calls[8].init?.method, 'POST')
   })
 })
 
