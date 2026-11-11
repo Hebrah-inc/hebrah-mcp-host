@@ -783,10 +783,14 @@ async function executeEnvironmentTool(
       if (Array.isArray(args.diagnosis_pathways ?? args.diagnosisPathways)) body.diagnosis_pathways = args.diagnosis_pathways ?? args.diagnosisPathways
       if (Array.isArray(args.treatment_modalities ?? args.treatmentModalities)) body.treatment_modalities = args.treatment_modalities ?? args.treatmentModalities
       if (Array.isArray(args.acuity_levels ?? args.acuityLevels)) body.acuity_levels = args.acuity_levels ?? args.acuityLevels
-      if (args.specialty_pack_id ?? args.specialtyPackId) body.specialty_pack_id = String(args.specialty_pack_id ?? args.specialtyPackId)
+      if (args.specialty_pack_id ?? args.specialtyPackId) {
+        body.specialty_pack_id = safeId(String(args.specialty_pack_id ?? args.specialtyPackId).trim(), 'specialty_pack_id')
+      }
       if (Array.isArray(args.condition_ids ?? args.conditionIds)) body.condition_ids = args.condition_ids ?? args.conditionIds
       if (args.depth) body.depth = String(args.depth)
-      if (args.branch_id ?? args.branchId) body.branch_id = String(args.branch_id ?? args.branchId)
+      if (args.branch_id ?? args.branchId) {
+        body.branch_id = safeId(String(args.branch_id ?? args.branchId).trim(), 'branch_id')
+      }
       return envFetch(`${envPrefix}/${encodedEnvId}/ehr/patients/generate`, {
         method: 'POST',
         body: JSON.stringify(body)
@@ -794,11 +798,13 @@ async function executeEnvironmentTool(
     }
     case 'env_compare_ecgs': {
       const { encodedEnvId } = resolveEnvId()
-      const leftEcgId = String(args.left_ecg_id ?? args.leftEcgId ?? '').trim()
-      const rightEcgId = String(args.right_ecg_id ?? args.rightEcgId ?? '').trim()
-      if (!leftEcgId || !rightEcgId) {
+      const rawLeft = String(args.left_ecg_id ?? args.leftEcgId ?? '').trim()
+      const rawRight = String(args.right_ecg_id ?? args.rightEcgId ?? '').trim()
+      if (!rawLeft || !rawRight) {
         throw new Error('left_ecg_id and right_ecg_id are required for env_compare_ecgs')
       }
+      const leftEcgId = safeId(rawLeft, 'left_ecg_id')
+      const rightEcgId = safeId(rawRight, 'right_ecg_id')
       return envFetch(`${envPrefix}/${encodedEnvId}/ecg/compare`, {
         method: 'POST',
         body: JSON.stringify({
@@ -2001,13 +2007,15 @@ export async function callTool(
           })
         })
       }
-      const q = connectionId ? `?connection_id=${encodeURIComponent(String(connectionId))}` : ''
+      const safePatId = safeId(String(patientId), 'patient_id')
+      const safeConnId = connectionId ? safeId(String(connectionId), 'connection_id') : undefined
+      const q = safeConnId ? `?connection_id=${encodeURIComponent(safeConnId)}` : ''
       return ultraFetch(auth.orgId, `/v1/sandbox/research-packs/ptbxl_ecg_v1/attach${q}`, {
         method: 'POST',
         body: JSON.stringify({
-          patient_id: String(patientId),
+          patient_id: safePatId,
           ecg_id: ecgId,
-          connection_id: connectionId ? String(connectionId) : undefined
+          connection_id: safeConnId
         })
       })
     }
