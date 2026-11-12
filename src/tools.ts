@@ -298,7 +298,15 @@ export const AGENT_TOOL_NAMES = [
   'env_trigger_scenario',
   'env_list_patients',
   'env_get_patient_chart',
+  'env_list_specialty_packs',
+  'env_list_ecg_studies',
+  'env_get_ecg_waveform',
+  'env_attach_ecg_study',
   'env_compare_ecgs',
+  'env_manage_cohort_branch',
+  'env_evaluate_prescribing_cascade',
+  'env_x12_benchmark',
+  'env_fhir_search',
   'env_get_logs',
   'env_pause',
   'env_resume',
@@ -450,9 +458,49 @@ export const agentToolDefinitions = [
     inputSchema: listToolInputSchema('env_get_patient_chart')
   },
   {
+    name: 'env_list_specialty_packs',
+    description: 'List all 12 clinical specialty condition packs (or inspect a specific pack such as cardiology or geriatric_polypharmacy) in an environment',
+    inputSchema: listToolInputSchema('env_list_specialty_packs')
+  },
+  {
+    name: 'env_list_ecg_studies',
+    description: 'List 12-lead PTB-XL ECG studies attached to environment patients or list open-data PTB-XL exemplars (NORM, MI, STTC, CD, HYP)',
+    inputSchema: listToolInputSchema('env_list_ecg_studies')
+  },
+  {
+    name: 'env_get_ecg_waveform',
+    description: 'Retrieve 12-lead 100 Hz ECG waveform metadata and lead sample previews for an environment ECG study or PTB-XL exemplar',
+    inputSchema: listToolInputSchema('env_get_ecg_waveform')
+  },
+  {
+    name: 'env_attach_ecg_study',
+    description: 'Attach a PTB-XL 12-lead ECG study to an environment patient (protected by inbound DLP filter)',
+    inputSchema: listToolInputSchema('env_attach_ecg_study')
+  },
+  {
     name: 'env_compare_ecgs',
     description: 'Compare two 12-lead PTB-XL ECG studies in an environment (lead-by-lead amplitude/RMS delta analysis and clinical summary)',
     inputSchema: listToolInputSchema('env_compare_ecgs')
+  },
+  {
+    name: 'env_manage_cohort_branch',
+    description: 'List, create, fork, or compare A/B specialty research cohort branches in an isolated environment',
+    inputSchema: listToolInputSchema('env_manage_cohort_branch')
+  },
+  {
+    name: 'env_evaluate_prescribing_cascade',
+    description: 'Evaluate HL7 CDS Hooks 2.0 (order-sign / order-select) point-of-prescribing cascade detection with longitudinal RxNorm initiation vs. unlinked refill reconciliation and Cystatin C vs. Creatinine eGFR ground truth',
+    inputSchema: listToolInputSchema('env_evaluate_prescribing_cascade')
+  },
+  {
+    name: 'env_x12_benchmark',
+    description: 'Benchmark the environment X12 837/835 claims against CMS Medicare utilization open-data (medicare_utilization_v1)',
+    inputSchema: listToolInputSchema('env_x12_benchmark')
+  },
+  {
+    name: 'env_fhir_search',
+    description: 'Search environment-scoped FHIR R4 resource bundles (Patient, MedicationRequest, Observation, Condition, Encounter, Claim, DiagnosticReport, etc.)',
+    inputSchema: listToolInputSchema('env_fhir_search')
   },
   {
     name: 'env_get_logs',
@@ -632,7 +680,15 @@ export const toolDefinitions = [
   { name: 'env_trigger_scenario', description: 'Trigger a synthetic clinical workflow scenario with live HL7 WebSocket alerts' },
   { name: 'env_list_patients', description: 'List synthetic patients in the environment EHR with multi-facet filtering by department, diagnosis pathway, treatment modality, or acuity' },
   { name: 'env_get_patient_chart', description: 'Retrieve a complete synthetic patient chart (including 12-lead PTB-XL ECG studies)' },
+  { name: 'env_list_specialty_packs', description: 'List all 12 clinical specialty condition packs or inspect a specific pack (e.g. cardiology, geriatric_polypharmacy)' },
+  { name: 'env_list_ecg_studies', description: 'List 12-lead PTB-XL ECG studies attached to environment patients or list open-data PTB-XL exemplars' },
+  { name: 'env_get_ecg_waveform', description: 'Retrieve 12-lead 100 Hz ECG waveform metadata and lead sample previews for an environment ECG study' },
+  { name: 'env_attach_ecg_study', description: 'Attach a PTB-XL 12-lead ECG study to an environment patient' },
   { name: 'env_compare_ecgs', description: 'Compare two 12-lead PTB-XL ECG studies in an environment (lead-by-lead amplitude/RMS delta analysis)' },
+  { name: 'env_manage_cohort_branch', description: 'List, create, fork, or compare A/B specialty research cohort branches in an isolated environment' },
+  { name: 'env_evaluate_prescribing_cascade', description: 'Evaluate HL7 CDS Hooks 2.0 (order-sign / order-select) point-of-prescribing cascade detection' },
+  { name: 'env_x12_benchmark', description: 'Benchmark environment X12 837/835 claims against CMS Medicare utilization open-data (medicare_utilization_v1)' },
+  { name: 'env_fhir_search', description: 'Search environment-scoped FHIR R4 resource bundles (Patient, MedicationRequest, Observation, Condition, Encounter, etc.)' },
   { name: 'env_get_logs', description: 'Retrieve tamper-evident activity and audit logs for the isolated health environment' },
   { name: 'env_pause', description: 'Pause an environment to suspend compute and reduce hourly rate to $0.00/hr' },
   { name: 'env_resume', description: 'Resume a paused environment and restore compute services' },
@@ -703,6 +759,13 @@ async function executeEnvironmentTool(
       return agentApiFetch<T>(auth, path, init)
     }
     return dashboardFetch<T>(auth.pat, path, init)
+  }
+
+  const apiEnvFetch = <T>(subPath: string, init?: RequestInit): Promise<T> => {
+    if (auth.mode === 'agent') {
+      return agentApiFetch<T>(auth, `/v1/environments/${subPath}`, init)
+    }
+    return ultraFetch<T>(auth.orgId, `/v1/environments/${subPath}`, init)
   }
 
   const resolveEnvId = (requireExplicit = false): { rawEnvId: string, encodedEnvId: string } => {
@@ -812,6 +875,197 @@ async function executeEnvironmentTool(
           right_ecg_id: rightEcgId
         })
       })
+    }
+    case 'env_list_specialty_packs': {
+      const { encodedEnvId } = resolveEnvId()
+      const packId = String(args.pack_id ?? args.packId ?? '').trim()
+      if (packId) {
+        return apiEnvFetch(`${encodedEnvId}/specialty-packs/${safeId(packId, 'pack_id')}`)
+      }
+      return apiEnvFetch(`${encodedEnvId}/specialty-packs`)
+    }
+    case 'env_list_ecg_studies': {
+      const { encodedEnvId } = resolveEnvId()
+      const source = String(args.source ?? 'studies').trim().toLowerCase()
+      const params = new URLSearchParams()
+      if (source === 'exemplars') {
+        if (args.superclass) params.set('superclass', String(args.superclass))
+        if (args.sex) params.set('sex', String(args.sex))
+        if (args.limit != null) params.set('limit', String(args.limit))
+        if (args.offset != null) params.set('offset', String(args.offset))
+        const qs = params.toString()
+        return apiEnvFetch(`${encodedEnvId}/ecg/exemplars${qs ? `?${qs}` : ''}`)
+      }
+      if (args.patient_id ?? args.patientId) params.set('patient_id', String(args.patient_id ?? args.patientId))
+      if (args.superclass) params.set('superclass', String(args.superclass))
+      if (args.branch_id ?? args.branchId) params.set('branch_id', String(args.branch_id ?? args.branchId))
+      const qs = params.toString()
+      return apiEnvFetch(`${encodedEnvId}/ecg/studies${qs ? `?${qs}` : ''}`)
+    }
+    case 'env_get_ecg_waveform': {
+      const { encodedEnvId } = resolveEnvId()
+      const rawEcgId = String(args.ecg_id ?? args.ecgId ?? '').trim()
+      if (!rawEcgId) throw new Error('ecg_id is required for env_get_ecg_waveform')
+      const encodedEcgId = safeId(rawEcgId, 'ecg_id')
+      if (args.include_samples ?? args.includeSamples) {
+        return apiEnvFetch(`${encodedEnvId}/ecg/studies/${encodedEcgId}/waveform`)
+      }
+      const [study, wave] = await Promise.all([
+        apiEnvFetch<Record<string, unknown>>(`${encodedEnvId}/ecg/studies/${encodedEcgId}`),
+        apiEnvFetch<{
+          ecg_id?: string | number
+          fs?: number
+          duration_s?: number
+          lead_order?: string[]
+          leads?: Record<string, number[]>
+          disclaimer?: string
+          attribution?: string
+        }>(`${encodedEnvId}/ecg/studies/${encodedEcgId}/waveform`)
+      ])
+      const preview: Record<string, number[]> = {}
+      for (const [lead, samples] of Object.entries(wave.leads || {})) {
+        preview[lead] = Array.isArray(samples) ? samples.slice(0, 8) : []
+      }
+      return {
+        ...study,
+        fs: wave.fs,
+        duration_s: wave.duration_s,
+        lead_order: wave.lead_order,
+        lead_sample_counts: Object.fromEntries(
+          Object.entries(wave.leads || {}).map(([k, v]) => [k, Array.isArray(v) ? v.length : 0])
+        ),
+        lead_preview_first_8: preview,
+        waveform_path: `/v1/environments/${encodedEnvId}/ecg/studies/${encodedEcgId}/waveform`,
+        disclaimer: wave.disclaimer,
+        attribution: wave.attribution,
+        note: 'Pass include_samples=true to retrieve full 12-lead sample arrays.'
+      }
+    }
+    case 'env_attach_ecg_study': {
+      const { encodedEnvId } = resolveEnvId()
+      const rawPatientId = String(args.patient_id ?? args.patientId ?? '').trim()
+      const rawEcgId = String(args.ecg_id ?? args.ecgId ?? '').trim()
+      if (!rawPatientId || !rawEcgId) {
+        throw new Error('patient_id and ecg_id are required for env_attach_ecg_study')
+      }
+      const body: Record<string, unknown> = {
+        patient_id: safeId(rawPatientId, 'patient_id'),
+        ecg_id: safeId(rawEcgId, 'ecg_id')
+      }
+      if (args.branch_id ?? args.branchId) {
+        body.branch_id = safeId(String(args.branch_id ?? args.branchId).trim(), 'branch_id')
+      }
+      return apiEnvFetch(`${encodedEnvId}/ecg/studies`, {
+        method: 'POST',
+        body: JSON.stringify(body)
+      })
+    }
+    case 'env_manage_cohort_branch': {
+      const { encodedEnvId } = resolveEnvId()
+      const action = String(args.action ?? 'list').trim().toLowerCase()
+      if (action === 'list') {
+        return apiEnvFetch(`${encodedEnvId}/cohorts/branches`)
+      }
+      if (action === 'create') {
+        const name = String(args.name ?? '').trim()
+        if (!name) throw new Error('name is required for env_manage_cohort_branch action=create')
+        return apiEnvFetch(`${encodedEnvId}/cohorts/branches`, {
+          method: 'POST',
+          body: JSON.stringify({
+            name,
+            parent_branch_id: String(args.parent_branch_id ?? args.parentBranchId ?? 'main'),
+            description: args.description ? String(args.description) : undefined
+          })
+        })
+      }
+      if (action === 'fork') {
+        const name = String(args.name ?? '').trim()
+        if (!name) throw new Error('name is required for env_manage_cohort_branch action=fork')
+        const body: Record<string, unknown> = {
+          name,
+          source_branch_id: String(args.source_branch_id ?? args.sourceBranchId ?? 'main')
+        }
+        if (args.description) body.description = String(args.description)
+        if (args.mutation && typeof args.mutation === 'object') body.mutation = args.mutation
+        return apiEnvFetch(`${encodedEnvId}/cohorts/branches/fork`, {
+          method: 'POST',
+          body: JSON.stringify(body)
+        })
+      }
+      if (action === 'compare') {
+        const leftBranch = safeId(String(args.left_branch_id ?? args.leftBranchId ?? 'main').trim(), 'left_branch_id')
+        const rightBranch = String(args.right_branch_id ?? args.rightBranchId ?? '').trim()
+        if (!rightBranch) throw new Error('right_branch_id is required for env_manage_cohort_branch action=compare')
+        const qs = new URLSearchParams({
+          left_branch_id: leftBranch,
+          right_branch_id: safeId(rightBranch, 'right_branch_id')
+        })
+        return apiEnvFetch(`${encodedEnvId}/cohorts/branches/compare?${qs.toString()}`)
+      }
+      throw new Error(`Unsupported cohort branch action: ${action}`)
+    }
+    case 'env_evaluate_prescribing_cascade': {
+      const { encodedEnvId } = resolveEnvId()
+      const patientId = safeId(String(args.patient_id ?? args.patientId ?? '').trim(), 'patient_id')
+      const body: Record<string, unknown> = {
+        hook: String(args.hook ?? 'order-sign'),
+        hookInstance: String(args.hookInstance ?? `mcp-cds-${Date.now()}`),
+        context: {
+          patientId,
+          userId: String(args.user_id ?? args.userId ?? 'Practitioner/prac-mcp')
+        }
+      }
+      const rxnorm = String(args.proposed_rxnorm ?? args.proposedRxnorm ?? '').trim()
+      const display = String(args.proposed_medication ?? args.proposedMedication ?? '').trim()
+      if (rxnorm || display) {
+        ;(body.context as Record<string, unknown>).draftOrders = {
+          resourceType: 'Bundle',
+          entry: [
+            {
+              resource: {
+                resourceType: 'MedicationRequest',
+                status: 'draft',
+                intent: 'order',
+                medicationCodeableConcept: {
+                  text: display || rxnorm,
+                  coding: rxnorm
+                    ? [
+                        {
+                          system: 'http://www.nlm.nih.gov/research/umls/rxnorm',
+                          code: rxnorm,
+                          display: display || rxnorm
+                        }
+                      ]
+                    : []
+                }
+              }
+            }
+          ]
+        }
+      }
+      return apiEnvFetch(`${encodedEnvId}/cds-hooks/prescribing-cascade`, {
+        method: 'POST',
+        body: JSON.stringify(body)
+      })
+    }
+    case 'env_x12_benchmark': {
+      const { encodedEnvId } = resolveEnvId()
+      return apiEnvFetch(`${encodedEnvId}/x12/benchmark`)
+    }
+    case 'env_fhir_search': {
+      const { encodedEnvId } = resolveEnvId()
+      const rawType = String(args.resource_type ?? args.resourceType ?? '').trim()
+      if (!rawType) throw new Error('resource_type is required for env_fhir_search')
+      const safeType = safeId(rawType, 'resource_type')
+      const params = new URLSearchParams()
+      if (args.patient) params.set('patient', String(args.patient))
+      if (args.subject) params.set('subject', String(args.subject))
+      if (args.status) params.set('status', String(args.status))
+      if (args.category) params.set('category', String(args.category))
+      if (args.code) params.set('code', String(args.code))
+      if (args._count != null || args.count != null) params.set('_count', String(args._count ?? args.count))
+      const qs = params.toString()
+      return apiEnvFetch(`${encodedEnvId}/fhir/${safeType}${qs ? `?${qs}` : ''}`)
     }
     case 'env_connect': {
       const { rawEnvId, encodedEnvId } = resolveEnvId(true)
@@ -1942,6 +2196,7 @@ export async function callTool(
       return ultraFetch(auth.orgId, `/v1/sandbox/research-packs/${safeId(packId, 'packId')}/compare${q}`)
     }
     case 'list_ptbxl_ecg_records': {
+      const envId = args.environment_id ?? args.environmentId
       const params = new URLSearchParams()
       const superclass = args.superclass ?? args.superClass
       if (superclass) params.set('superclass', String(superclass))
@@ -1950,26 +2205,39 @@ export async function callTool(
       if (args.limit != null) params.set('limit', String(args.limit))
       if (args.offset != null) params.set('offset', String(args.offset))
       const qs = params.toString()
+      if (envId) {
+        const encodedEnvId = safeId(String(envId), 'environment_id')
+        return ultraFetch(auth.orgId, `/v1/environments/${encodedEnvId}/ecg/exemplars${qs ? `?${qs}` : ''}`)
+      }
       return ultraFetch(auth.orgId, `/v1/sandbox/research-packs/ptbxl_ecg_v1/records${qs ? `?${qs}` : ''}`)
     }
     case 'get_ptbxl_ecg_record': {
       const ecgId = args.ecg_id ?? args.ecgId
       if (ecgId == null) throw new Error('ecg_id required for get_ptbxl_ecg_record')
+      const envId = args.environment_id ?? args.environmentId
+      if (envId) {
+        const encodedEnvId = safeId(String(envId), 'environment_id')
+        return ultraFetch(auth.orgId, `/v1/environments/${encodedEnvId}/ecg/studies/${safeId(String(ecgId), 'ecg_id')}`)
+      }
       return ultraFetch(auth.orgId, `/v1/sandbox/research-packs/ptbxl_ecg_v1/records/${safeId(String(ecgId), 'ecg_id')}`)
     }
     case 'get_ptbxl_ecg_waveform_meta': {
       const ecgId = args.ecg_id ?? args.ecgId
       if (ecgId == null) throw new Error('ecg_id required for get_ptbxl_ecg_waveform_meta')
       const encodedEcgId = safeId(String(ecgId), 'ecg_id')
+      const envId = args.environment_id ?? args.environmentId
+      const waveformPath = envId
+        ? `/v1/environments/${safeId(String(envId), 'environment_id')}/ecg/studies/${encodedEcgId}/waveform`
+        : `/v1/sandbox/research-packs/ptbxl_ecg_v1/records/${encodedEcgId}/waveform`
       const wave = await ultraFetch<{
-        ecg_id?: number
+        ecg_id?: number | string
         fs?: number
         duration_s?: number
         lead_order?: string[]
         leads?: Record<string, number[]>
         disclaimer?: string
         attribution?: string
-      }>(auth.orgId, `/v1/sandbox/research-packs/ptbxl_ecg_v1/records/${encodedEcgId}/waveform`)
+      }>(auth.orgId, waveformPath)
       const preview: Record<string, number[]> = {}
       for (const [lead, samples] of Object.entries(wave.leads || {})) {
         preview[lead] = Array.isArray(samples) ? samples.slice(0, 8) : []
@@ -1984,7 +2252,7 @@ export async function callTool(
           Object.entries(wave.leads || {}).map(([k, v]) => [k, Array.isArray(v) ? v.length : 0])
         ),
         lead_preview_first_8: preview,
-        waveform_path: `/v1/sandbox/research-packs/ptbxl_ecg_v1/records/${encodedEcgId}/waveform`,
+        waveform_path: waveformPath,
         disclaimer: wave.disclaimer,
         attribution: wave.attribution,
         note: 'Full samples omitted for MCP payload size. Use waveform_path via API/UI viewer.'

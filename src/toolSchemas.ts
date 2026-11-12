@@ -194,6 +194,7 @@ export function listToolInputSchema(toolName: string) {
       return {
         type: 'object' as const,
         properties: {
+          environment_id: { type: 'string' as const, description: 'Optional isolated environment ID to list PTB-XL exemplars in environment scope' },
           superclass: {
             type: 'string' as const,
             enum: ['NORM', 'MI', 'STTC', 'CD', 'HYP'] as const
@@ -209,7 +210,10 @@ export function listToolInputSchema(toolName: string) {
       return {
         type: 'object' as const,
         required: ['ecg_id'],
-        properties: { ecg_id: { type: 'string' as const } }
+        properties: {
+          environment_id: { type: 'string' as const, description: 'Optional isolated environment ID' },
+          ecg_id: { type: 'string' as const }
+        }
       }
     case 'attach_ptbxl_ecg_exemplar':
       return {
@@ -307,7 +311,7 @@ export function listToolInputSchema(toolName: string) {
         type: 'object' as const,
         properties: {
           environment_id: { type: 'string' as const, description: 'Environment ID (defaults to active session environment)' },
-          count: { type: 'number' as const, description: 'Number of new synthetic patients to admit (1-100, default: 10)' },
+          count: { type: 'number' as const, description: 'Number of new synthetic patients to admit (1-500, default: 10)' },
           departments: { type: 'array' as const, items: { type: 'string' as const }, description: 'Hospital departments' },
           diagnosis_pathways: { type: 'array' as const, items: { type: 'string' as const }, description: 'Specific clinical archetype IDs' },
           treatment_modalities: { type: 'array' as const, items: { type: 'string' as const }, description: 'Treatment modalities' },
@@ -316,6 +320,91 @@ export function listToolInputSchema(toolName: string) {
           condition_ids: { type: 'array' as const, items: { type: 'string' as const }, description: 'Optional specific condition IDs from the specialty pack' },
           depth: { type: 'string' as const, enum: ['standard', 'rich'] as const, description: 'Longitudinal clinical depth (rich seeds multi-visit encounters & serial CKD eGFR/Creatinine trajectories)' },
           branch_id: { type: 'string' as const, description: 'Optional cohort branch ID for A/B cohort comparison' }
+        }
+      }
+    case 'env_list_specialty_packs':
+      return {
+        type: 'object' as const,
+        properties: {
+          environment_id: { type: 'string' as const, description: 'Environment ID (defaults to active session environment)' },
+          specialty_id: { type: 'string' as const, description: 'Optional specialty pack ID (e.g. cardiology, geriatric_polypharmacy) to retrieve full condition archetypes' }
+        }
+      }
+    case 'env_list_ecg_studies':
+      return {
+        type: 'object' as const,
+        properties: {
+          environment_id: { type: 'string' as const, description: 'Environment ID (defaults to active session environment)' },
+          patient_id: { type: 'string' as const, description: 'Optional patient ID filter (e.g. pat-013)' },
+          superclass: { type: 'string' as const, enum: ['NORM', 'MI', 'STTC', 'CD', 'HYP'] as const, description: 'Optional PTB-XL diagnostic superclass filter' },
+          exemplars_only: { type: 'boolean' as const, description: 'If true, lists PTB-XL open-data exemplars instead of attached patient studies' }
+        }
+      }
+    case 'env_get_ecg_waveform':
+      return {
+        type: 'object' as const,
+        required: ['study_id'],
+        properties: {
+          environment_id: { type: 'string' as const, description: 'Environment ID (defaults to active session environment)' },
+          study_id: { type: 'string' as const, description: 'ECG study ID or PTB-XL exemplar ID' }
+        }
+      }
+    case 'env_attach_ecg_study':
+      return {
+        type: 'object' as const,
+        required: ['patient_id'],
+        properties: {
+          environment_id: { type: 'string' as const, description: 'Environment ID (defaults to active session environment)' },
+          patient_id: { type: 'string' as const, description: 'Target patient ID in the environment' },
+          ecg_id: { type: 'string' as const, description: 'Optional PTB-XL exemplar ID (1..25)' },
+          superclass: { type: 'string' as const, enum: ['NORM', 'MI', 'STTC', 'CD', 'HYP'] as const, description: 'Optional diagnostic superclass' },
+          clinical_notes: { type: 'string' as const, description: 'Optional clinical notes (scanned by DLP filter)' }
+        }
+      }
+    case 'env_manage_cohort_branch':
+      return {
+        type: 'object' as const,
+        properties: {
+          environment_id: { type: 'string' as const, description: 'Environment ID (defaults to active session environment)' },
+          action: { type: 'string' as const, enum: ['list', 'create', 'fork', 'compare'] as const, description: 'Cohort branch action (default: list)' },
+          name: { type: 'string' as const, description: 'Branch name (for create or fork)' },
+          specialty_pack_id: { type: 'string' as const, description: 'Specialty pack ID for create (default: cardiology)' },
+          condition_ids: { type: 'array' as const, items: { type: 'string' as const }, description: 'Optional condition IDs' },
+          count: { type: 'number' as const, description: 'Patients to admit into branch (default: 10)' },
+          depth: { type: 'string' as const, enum: ['standard', 'rich'] as const, description: 'Longitudinal depth (standard or rich)' },
+          branch_id: { type: 'string' as const, description: 'Source branch ID for fork' },
+          left_branch_id: { type: 'string' as const, description: 'Left branch ID for compare' },
+          right_branch_id: { type: 'string' as const, description: 'Right branch ID for compare' }
+        }
+      }
+    case 'env_evaluate_prescribing_cascade':
+      return {
+        type: 'object' as const,
+        properties: {
+          environment_id: { type: 'string' as const, description: 'Environment ID (defaults to active session environment)' },
+          hook: { type: 'string' as const, enum: ['order-sign', 'order-select'] as const, description: 'HL7 CDS Hooks 2.0 hook type (default: order-sign)' },
+          patient_id: { type: 'string' as const, description: 'Patient ID in the environment (e.g. pat-013)' },
+          encounter_id: { type: 'string' as const, description: 'Optional encounter ID' },
+          proposed_rxnorm: { type: 'string' as const, description: 'Optional RxNorm code of the proposed order at T0' },
+          proposed_display: { type: 'string' as const, description: 'Optional display name of the proposed order at T0' }
+        }
+      }
+    case 'env_x12_benchmark':
+      return {
+        type: 'object' as const,
+        properties: {
+          environment_id: { type: 'string' as const, description: 'Environment ID (defaults to active session environment)' }
+        }
+      }
+    case 'env_fhir_search':
+      return {
+        type: 'object' as const,
+        required: ['resource_type'],
+        properties: {
+          environment_id: { type: 'string' as const, description: 'Environment ID (defaults to active session environment)' },
+          resource_type: { type: 'string' as const, description: 'FHIR R4 resource type (Patient, MedicationRequest, Observation, Condition, Encounter, Claim, DiagnosticReport, etc.)' },
+          patient: { type: 'string' as const, description: 'Optional patient ID filter (e.g. pat-013)' },
+          count: { type: 'number' as const, description: 'Max entries to return (1-500, default: 100)' }
         }
       }
     case 'env_compare_ecgs':

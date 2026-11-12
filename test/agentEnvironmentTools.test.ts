@@ -258,6 +258,77 @@ describe('agent environment tools (hb_conn_*)', () => {
     assert.ok(calls[3].url.endsWith('/v1/agent/invite-human'))
     assert.equal(calls[3].init?.method, 'POST')
   })
+
+  it('routes specialty packs, PTB-XL cardiology ECGs, cohort branches, prescribing cascade CDS Hooks, X12 benchmarks, and FHIR R4 search', async () => {
+    for (const tool of [
+      'env_list_specialty_packs',
+      'env_list_ecg_studies',
+      'env_get_ecg_waveform',
+      'env_attach_ecg_study',
+      'env_manage_cohort_branch',
+      'env_evaluate_prescribing_cascade',
+      'env_x12_benchmark',
+      'env_fhir_search'
+    ]) {
+      assert.ok(AGENT_TOOL_NAMES.includes(tool), `Expected ${tool} in AGENT_TOOL_NAMES`)
+    }
+
+    await callTool(agentAuth, 'sess-cardio-1', 'env_list_specialty_packs', {
+      environment_id: 'env-cardio-1',
+      pack_id: 'geriatric_polypharmacy'
+    })
+    assert.ok(calls[0].url.endsWith('/v1/environments/env-cardio-1/specialty-packs/geriatric_polypharmacy'))
+
+    await callTool(agentAuth, 'sess-cardio-1', 'env_list_ecg_studies', {
+      environment_id: 'env-cardio-1',
+      source: 'exemplars',
+      superclass: 'MI'
+    })
+    assert.ok(calls[1].url.endsWith('/v1/environments/env-cardio-1/ecg/exemplars?superclass=MI'))
+
+    await callTool(agentAuth, 'sess-cardio-1', 'env_attach_ecg_study', {
+      environment_id: 'env-cardio-1',
+      patient_id: 'pat-013',
+      ecg_id: '10002'
+    })
+    assert.ok(calls[2].url.endsWith('/v1/environments/env-cardio-1/ecg/studies'))
+    assert.equal(calls[2].init?.method, 'POST')
+
+    await callTool(agentAuth, 'sess-cardio-1', 'env_manage_cohort_branch', {
+      environment_id: 'env-cardio-1',
+      action: 'fork',
+      name: 'sglt2i-arm',
+      source_branch_id: 'main',
+      mutation: { add_medication_rxnorm: '1373458' }
+    })
+    assert.ok(calls[3].url.endsWith('/v1/environments/env-cardio-1/cohorts/branches/fork'))
+    assert.equal(calls[3].init?.method, 'POST')
+
+    await callTool(agentAuth, 'sess-cardio-1', 'env_evaluate_prescribing_cascade', {
+      environment_id: 'env-cardio-1',
+      patient_id: 'pat-013',
+      proposed_rxnorm: '4603',
+      proposed_medication: 'Furosemide 20 MG Oral Tablet'
+    })
+    assert.ok(calls[4].url.endsWith('/v1/environments/env-cardio-1/cds-hooks/prescribing-cascade'))
+    assert.equal(calls[4].init?.method, 'POST')
+    const cdsBody = JSON.parse(String(calls[4].init?.body))
+    assert.equal(cdsBody.context.patientId, 'pat-013')
+    assert.equal(cdsBody.context.draftOrders.entry[0].resource.medicationCodeableConcept.coding[0].code, '4603')
+
+    await callTool(agentAuth, 'sess-cardio-1', 'env_x12_benchmark', {
+      environment_id: 'env-cardio-1'
+    })
+    assert.ok(calls[5].url.endsWith('/v1/environments/env-cardio-1/x12/benchmark'))
+
+    await callTool(agentAuth, 'sess-cardio-1', 'env_fhir_search', {
+      environment_id: 'env-cardio-1',
+      resource_type: 'MedicationRequest',
+      patient: 'pat-013',
+      _count: 100
+    })
+    assert.ok(calls[6].url.endsWith('/v1/environments/env-cardio-1/fhir/MedicationRequest?patient=pat-013&_count=100'))
+  })
 })
 
 describe('PAT environment tools (hb_pat_*)', () => {
