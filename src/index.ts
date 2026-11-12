@@ -494,23 +494,55 @@ function resolvePublicMcpBaseUrl(hostHeader: string | undefined): {
   const siteUrl = isProd
     ? 'https://hebrah.com'
     : isStaging
-      ? 'https://hebrah-staging-www-76zyj6ngda-uc.a.run.app'
+      ? 'https://hebrah-staging-www-796565871258.us-central1.run.app'
       : 'http://localhost:3020'
   const mcpBaseUrl = isProd
     ? 'https://mcp.hebrah.com'
     : isStaging
-      ? 'https://hebrah-staging-mcp-76zyj6ngda-uc.a.run.app'
+      ? ((hostHeader ?? '').includes('hebrah-staging-mcp') ? `https://${hostHeader}` : 'https://hebrah-staging-mcp-796565871258.us-central1.run.app')
       : `http://${hostHeader || `localhost:${config.port}`}`
   const apiUrl = isProd
     ? 'https://api.hebrah.com'
     : isStaging
-      ? 'https://hebrah-staging-api-76zyj6ngda-uc.a.run.app'
+      ? 'https://hebrah-staging-api-796565871258.us-central1.run.app'
       : config.hebrahApiUrl
   return {
     siteUrl,
     mcpBaseUrl,
     apiUrl,
     dashboardUrl: config.dashboardUrl
+  }
+}
+
+function buildHostedOAuthProtectedResourceMetadata(hostHeader: string | undefined) {
+  const { siteUrl, mcpBaseUrl, apiUrl } = resolvePublicMcpBaseUrl(hostHeader)
+  const mcpEndpoint = `${mcpBaseUrl}/mcp`
+
+  return {
+    resource: mcpEndpoint,
+    resource_name: 'Hebrah Hosted Model Context Protocol (MCP) Server',
+    resource_documentation: `${siteUrl}/auth.md`,
+    bearer_methods_supported: ['header'],
+    scopes_supported: [
+      'environments:read',
+      'environments:write',
+      'environments:query',
+      'connections:read',
+      'connections:write',
+      'connections:query',
+      'audit:read',
+      'wallet:read'
+    ],
+    mcp_server_card: `${mcpBaseUrl}/.well-known/mcp/server-card.json`,
+    agent_auth: {
+      skill: `${siteUrl}/auth.md`,
+      register_uri: `${apiUrl}/v1/agent/register`,
+      token_prefixes: ['hb_conn_', 'hb_pat_', 'hb_live_', 'hb_test_'],
+      setup: {
+        cli: 'hebrah mcp install',
+        claudeCode: `claude mcp add -s user --transport http hebrah ${mcpEndpoint} --header "Authorization: Bearer $(jq -r .apiKey ~/.hebrah/credentials)"`
+      }
+    }
   }
 }
 
@@ -524,12 +556,12 @@ function buildHostedMcpServerCard(hostHeader: string | undefined) {
     title: 'Hebrah Isolated Health Environments & Clinical Connectivity MCP',
     description:
       'Official Streamable HTTP Model Context Protocol (MCP) server for Hebrah. Provision and query Isolated Health Environments across 16 clinical archetypes, consult the Conversational Environment Architect, run credential-blind SQL/Cypher/Vector/FHIR queries, trigger HL7 v2 clinical scenarios, and verify SHA-256 tamper-evident audit chains.',
-    version: '0.4.8',
+    version: '0.4.9',
     protocolVersion: '2025-06-18',
     serverInfo: {
       name: 'com.hebrah.mcp',
       title: 'Hebrah Isolated Health Environments & Clinical Connectivity MCP',
-      version: '0.4.8'
+      version: '0.4.9'
     },
     vendor: {
       name: 'Hebrah Inc.',
@@ -586,7 +618,7 @@ function buildHostedMcpServerCard(hostHeader: string | undefined) {
         listChanged: false
       }
     },
-    tools: agentToolDefinitions.slice(0, 16).map(t => ({
+    tools: agentToolDefinitions.map(t => ({
       name: t.name,
       description: t.description
     })),
@@ -594,6 +626,7 @@ function buildHostedMcpServerCard(hostHeader: string | undefined) {
       authGuide: `${siteUrl}/auth.md`,
       skillMd: `${siteUrl}/SKILL.md`,
       agentCard: `${siteUrl}/.well-known/agent-card.json`,
+      connectorsCatalog: `${siteUrl}/.well-known/connectors.json`,
       dashboard: dashboardUrl
     }
   }
@@ -639,13 +672,23 @@ app.get('/.well-known/mcp.json', (c) => {
   return c.json(buildHostedMcpServerCard(c.req.header('host')))
 })
 
-// MCP clients (e.g. Claude Code) automatically probe OAuth 2.1 discovery and RFC 7591
-// Dynamic Client Registration (/register) when an HTTP MCP server is added without an
-// Authorization header. Returning 401 with an explicit Bearer token setup hint instead
-// of a generic 404 prevents the misleading "Dynamic Client Registration rejected (HTTP 404)" error.
+for (const prmPath of [
+  '/.well-known/oauth-protected-resource',
+  '/.well-known/oauth-protected-resource/mcp'
+]) {
+  app.get(prmPath, (c) => {
+    c.header('Access-Control-Allow-Origin', '*')
+    c.header('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS')
+    return c.json(buildHostedOAuthProtectedResourceMetadata(c.req.header('host')))
+  })
+}
+
+// MCP clients (e.g. Claude Code) automatically probe OAuth 2.1 authorization server
+// metadata and RFC 7591 Dynamic Client Registration (/register) when an HTTP MCP server
+// is added without an Authorization header. Returning 401 with an explicit Bearer token
+// setup hint instead of a generic 404 prevents the misleading "Dynamic Client Registration rejected (HTTP 404)" error.
 for (const oauthProbePath of [
   '/.well-known/oauth-authorization-server',
-  '/.well-known/oauth-protected-resource',
   '/.well-known/openid-configuration',
   '/register',
   '/oauth/register'
