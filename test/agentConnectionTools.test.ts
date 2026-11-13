@@ -51,12 +51,16 @@ describe('agent-key sessions (hb_conn_*)', () => {
     )
   })
 
-  it('routes discover_data_sources to the merged API with the agent key', async () => {
+  it('routes discover_data_sources to the merged API with the agent key and optional pack filter', async () => {
     await callTool(agentAuth, 'sess-agent-1', 'discover_data_sources', {})
     assert.equal(calls.length, 1)
     assert.ok(calls[0].url.endsWith('/v1/connections/targets'))
     const headers = calls[0].init?.headers as Record<string, string>
     assert.equal(headers.Authorization, 'Bearer hb_conn_test1234567890abcdef')
+
+    await callTool(agentAuth, 'sess-agent-1', 'discover_data_sources', { pack: 'healthcare', healthy: true })
+    assert.equal(calls.length, 2)
+    assert.ok(calls[1].url.endsWith('/v1/connections/targets?pack=healthcare&healthy=true'))
   })
 
   it('routes connect_to_data_source to POST /v1/connections with target_id', async () => {

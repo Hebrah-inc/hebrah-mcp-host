@@ -318,7 +318,7 @@ export const AGENT_TOOL_NAMES = [
 ] as const
 
 export const agentToolDefinitions = [
-  { name: 'discover_data_sources', description: 'List every connector target with required scopes, tiers, and health', inputSchema: listToolInputSchema('discover_data_sources') },
+  { name: 'discover_data_sources', description: 'List Healthcare and Database connector targets with required scopes, tiers, and health (optional pack="healthcare"|"database")', inputSchema: listToolInputSchema('discover_data_sources') },
   {
     name: 'connect_to_data_source',
     description: 'Open a scoped, TTL-bound connection to a target (target_id + scopes from discovery); the agent never receives the source credential',
@@ -1422,8 +1422,18 @@ export async function callTool(
       return executeEnvironmentTool(auth, session, name, args)
     }
     switch (name) {
-      case 'discover_data_sources':
-        return agentApiFetch(auth, '/v1/connections/targets')
+      case 'discover_data_sources': {
+        const search = new URLSearchParams()
+        const pack = String(args.pack ?? args.pack_id ?? '').trim()
+        if (pack === 'healthcare' || pack === 'database') {
+          search.set('pack', pack)
+        }
+        if (args.healthy === true) {
+          search.set('healthy', 'true')
+        }
+        const qs = search.toString() ? `?${search.toString()}` : ''
+        return agentApiFetch(auth, `/v1/connections/targets${qs}`)
+      }
       case 'connect_to_data_source': {
         const target = String(args.target_id ?? args.target ?? '').trim()
         if (!target) throw new Error('target_id is required; call discover_data_sources first')

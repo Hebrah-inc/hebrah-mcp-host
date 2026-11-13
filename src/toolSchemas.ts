@@ -49,8 +49,22 @@ export function listToolInputSchema(toolName: string) {
       }
     case 'get_data_source_audit':
     case 'get_connect_usage':
-    case 'discover_data_sources':
       return emptySchema
+    case 'discover_data_sources':
+      return {
+        type: 'object' as const,
+        properties: {
+          pack: {
+            type: 'string' as const,
+            enum: ['healthcare', 'database'] as const,
+            description: 'Optional filter by active connector pack (healthcare or database)'
+          },
+          healthy: {
+            type: 'boolean' as const,
+            description: 'When true, return only healthy targets'
+          }
+        }
+      }
     case 'revoke_data_source_connection':
       return {
         type: 'object' as const,

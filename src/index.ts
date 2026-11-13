@@ -256,7 +256,7 @@ function bodyHasInitialize(body: unknown): boolean {
 
 const MCP_SERVER_INSTRUCTIONS = [
   'Hebrah hosted MCP: use Isolated Health Environment tools (env_list, env_connect, env_create, env_get, env_list_tables, env_query_db, env_record_outcome, env_trigger_scenario, env_list_patients, env_get_patient_chart, env_get_logs, env_pause, env_resume) for clinic sandbox environments, credential-blind SQL queries, synthetic EHR charts, and clinical scenarios.',
-  'For private enterprise data connectors, use discover_data_sources → confirm_action → connect_to_data_source → query_data_source; connections are scoped, read-only, TTL-bound, and auditable.',
+  'For Healthcare and Database data connectors, use discover_data_sources → confirm_action → connect_to_data_source → query_data_source; connections are scoped, read-only, TTL-bound, and auditable.',
   'For application integration code, use the official Node SDK @hebrah/sdk (npm install @hebrah/sdk).',
   'Call get_sdk_reference for full SDK docs, API surface, and MCP-to-SDK mapping — do not web-search npm.',
   'Both agent keys (hb_conn_*, hb_live_*, hb_test_* from hebrah login, hebrah signup, or POST /v1/concierge/chat) and dashboard personal access tokens (hb_pat_* from Settings → MCP) are accepted in the Authorization: Bearer <token> header across Claude Code, Cursor, VS Code, Windsurf, and Google Antigravity.',
