@@ -1424,7 +1424,8 @@ export async function callTool(
     switch (name) {
       case 'discover_data_sources': {
         const search = new URLSearchParams()
-        const pack = String(args.pack ?? args.pack_id ?? '').trim()
+        const rawPack = String(args.pack ?? args.pack_id ?? '').trim().toLowerCase()
+        const pack = rawPack === 'databases' ? 'database' : rawPack
         if (pack === 'healthcare' || pack === 'database') {
           search.set('pack', pack)
         }
